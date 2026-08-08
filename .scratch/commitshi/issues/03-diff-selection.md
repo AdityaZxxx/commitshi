@@ -4,12 +4,12 @@
 
 **Blocked by:** 01 — Scaffold + CLI
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Reads only `--cached` staged diff; unstaged/untracked never affect the result
-- [ ] Nothing staged → explanatory error, non-zero exit, no model call
-- [ ] Merge/conflict in progress → refuse with a reason
-- [ ] Only-unstaged/untracked → refuse with a reason
+- [x] Reads only `--cached` staged diff; unstaged/untracked never affect the result
+- [x] Nothing staged → explanatory error, non-zero exit, no model call
+- [x] Merge/conflict in progress → refuse with a reason
+- [x] Only-unstaged/untracked → refuse with a reason
 
 ## notes
 

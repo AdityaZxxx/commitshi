@@ -1,5 +1,5 @@
 import { parseArgs, USAGE } from "./cli.ts";
-import { hasStagedChanges } from "./git.ts";
+import { guardStagedChanges } from "./git.ts";
 
 /** Runs the CLI. Each stage returns the process exit code; main() applies it. */
 export async function main(
@@ -19,19 +19,20 @@ export async function main(
     return 0;
   }
 
-  let staged: boolean;
+  let guard;
   try {
-    staged = await hasStagedChanges();
+    guard = await guardStagedChanges();
   } catch (error) {
     stderr.write(`commitshi: error: ${(error as Error).message}\n`);
     return 1;
   }
-  if (!staged) {
-    stderr.write("commitshi: nothing staged — stage changes with git add, then run commitshi\n");
-    return 1;
+  if (!guard.ok) {
+    stderr.write(`${guard.reason}\n`);
+    return guard.exitCode;
   }
 
-  // Downstream pipeline (generation, edit loop, commit) lands in later tickets.
+  // Downstream pipeline (config resolution, compaction, generation, edit
+  // loop, commit) lands in later tickets.
   stdout.write("commitshi: commit message generation is not implemented yet\n");
   return 1;
 }
