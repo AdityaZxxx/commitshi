@@ -4,12 +4,12 @@
 
 **Blocked by:** 03 — Diff selection + boundary guards
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Dense digest: per-file stats + lean hunks, unchanged noise stripped
-- [ ] A large real diff compacts to a fraction of its raw size without losing which files changed and how
-- [ ] Diff over the ~10k-hunk cap → truncated marker present, flagged to the caller
-- [ ] Verifiable unit-level: needs no live model call to exercise
+- [x] Dense digest: per-file stats + lean hunks, unchanged noise stripped
+- [x] A large real diff compacts to a fraction of its raw size without losing which files changed and how
+- [x] Diff over the ~10k-hunk cap → truncated marker present, flagged to the caller
+- [x] Verifiable unit-level: needs no live model call to exercise
 
 ## notes
 
