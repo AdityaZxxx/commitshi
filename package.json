@@ -1,0 +1,25 @@
+{
+  "name": "commitshi",
+  "version": "0.1.0",
+  "description": "Generate a commit message from the staged diff with an LLM, then accept, edit, or regenerate before committing",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "commitshi": "bin/commitshi.ts"
+  },
+  "files": [
+    "bin",
+    "src"
+  ],
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "bun": ">=1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "bun-types": "^1.3.14"
+  }
+}
