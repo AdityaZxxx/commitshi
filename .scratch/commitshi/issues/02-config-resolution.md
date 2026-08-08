@@ -4,10 +4,10 @@
 
 **Blocked by:** 01 — Scaffold + CLI
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Precedence order resolves correctly for a given key name
-- [ ] Key found in standard provider env var → zero config needed
-- [ ] Key only in config file → used as fallback
-- [ ] No key anywhere → explanatory first-run skill message, exit 1
-- [ ] `--provider` / `--model` flags override file and git-config values
+- [x] Precedence order resolves correctly for a given key name
+- [x] Key found in standard provider env var → zero config needed
+- [x] Key only in config file → used as fallback
+- [x] No key anywhere → explanatory first-run skill message, exit 1
+- [x] `--provider` / `--model` flags override file and git-config values
