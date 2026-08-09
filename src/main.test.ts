@@ -141,5 +141,113 @@ describe("main", () => {
       expect(err.text()).toContain("template contract");
       expect(out.text().trim()).toBe("");
     });
+
+    // Ticket 07: the interactive loop wired through main, driven by a
+    // scripted key seam over a real staged repo. The loop seams make the
+    // run deterministic — no TTY, no editor, no live model.
+    const scriptedAsk = (answers: readonly (string | null)[]) => {
+      let i = 0;
+      return async () => (i < answers.length ? answers[i++] : null);
+    };
+    const interactive = (answers: readonly (string | null)[], extra: Record<string, unknown> = {}) => ({
+      ask: scriptedAsk(answers),
+      stdinIsTTY: true,
+      stdoutIsTTY: true,
+      ...extra,
+    });
+
+    async function stageA(): Promise<void> {
+      await git(workdir, "init", "-q");
+      await writeFile(join(workdir, "a.txt"), "one\n");
+      await git(workdir, "add", "a.txt");
+    }
+
+    test("Enter accepts the draft and proceeds to the next stage boundary (no commit)", async () => {
+      await stageA();
+      const out = capture();
+      const err = capture();
+      const code = await main([], out.stream, err.stream, {
+        chat: stubChat,
+        loop: interactive([""]),
+      });
+      expect(code).toBe(0);
+      expect(out.text()).toContain("feat(): add a.txt");
+      expect(err.text()).toContain("commit stage");
+      expect(err.text()).not.toContain("canceled");
+    });
+
+    test("e opens $EDITOR; the accepted draft is the edited message", async () => {
+      await stageA();
+      const out = capture();
+      const err = capture();
+      const edited = "fix(a): hand-edited in the editor";
+      const code = await main([], out.stream, err.stream, {
+        chat: stubChat,
+        loop: interactive(["e", ""], {
+          env: { EDITOR: "fake-editor" },
+          spawn: async (_editor: string, path: string) => {
+            await writeFile(path, `${edited}\n`);
+            return 0;
+          },
+        }),
+      });
+      expect(code).toBe(0);
+      expect(out.text()).toContain(edited);
+    });
+
+    test("e with no $EDITOR fails loud, never a silent accept", async () => {
+      await stageA();
+      const out = capture();
+      const err = capture();
+      const code = await main([], out.stream, err.stream, {
+        chat: stubChat,
+        loop: interactive(["e"], { env: { EDITOR: "" } }),
+      });
+      expect(code).toBe(1);
+      expect(err.text()).toContain("$EDITOR is not set");
+    });
+
+    test("r regenerates a fresh draft for the same unchanged staged diff", async () => {
+      await stageA();
+      let calls = 0;
+      const chat = async () => {
+        calls++;
+        return { ok: true as const, content: `type: feat\nscope: -\nsummary: draft ${calls}\nbody: -` };
+      };
+      const out = capture();
+      const err = capture();
+      const code = await main([], out.stream, err.stream, {
+        chat,
+        loop: interactive(["r", ""]),
+      });
+      expect(code).toBe(0);
+      expect(calls).toBe(2); // first draft + one regeneration
+      expect(out.text()).toContain("draft 2");
+    });
+
+    test("q cancels — no commit, exit 0", async () => {
+      await stageA();
+      const out = capture();
+      const err = capture();
+      const code = await main([], out.stream, err.stream, {
+        chat: stubChat,
+        loop: interactive(["q"]),
+      });
+      expect(code).toBe(0);
+      expect(err.text()).toContain("canceled");
+    });
+
+    test("no TTY (stdin piped) without --no-commit fails loud, never a silent accept", async () => {
+      await stageA();
+      const out = capture();
+      const err = capture();
+      const code = await main([], out.stream, err.stream, {
+        chat: stubChat,
+        loop: { ask: scriptedAsk([""]), stdinIsTTY: false, stdoutIsTTY: true },
+      });
+      expect(code).toBe(1);
+      expect(err.text()).toContain("interactive terminal");
+      expect(out.text()).not.toContain("feat(): add a.txt");
+    });
   });
 });
