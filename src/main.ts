@@ -3,6 +3,7 @@ import { guardStagedChanges, stagedDiff } from "./git.ts";
 import { makeResolveApiKey, makeResolveKey } from "./config.ts";
 import { generateDraft, type PipelineDeps } from "./pipeline.ts";
 import { interactLoop, type AskKey, type DraftAttempt } from "./loop.ts";
+import { commitAcceptedMessage, type CommitResult } from "./commit.ts";
 
 export type MainDeps = Readonly<{
   /** Overrides for the model call seam (tests); production uses the real adapter. */
@@ -15,6 +16,8 @@ export type MainDeps = Readonly<{
     env?: NodeJS.ProcessEnv;
     spawn?: (editor: string, path: string) => Promise<number>;
   }>;
+  /** Commit seam for tests; production runs `git commit -F -` in the cwd. */
+  commit?: (message: string) => Promise<CommitResult>;
 }>;
 
 /** Runs the CLI. Each stage returns the process exit code; main() applies it. */
@@ -84,8 +87,7 @@ export async function main(
   }
 
   // Interactive stage: the accept / edit / regenerate loop. The accepted
-  // draft crosses the stage boundary toward the commit; the commit itself is
-  // ticket 08's job and is intentionally NOT built here.
+  // draft crosses the stage boundary into the commit stage below.
   const loopDeps = deps.loop;
   const outcome = await interactLoop(first, {
     stdin: process.stdin,
@@ -111,9 +113,16 @@ export async function main(
     return 0;
   }
 
-  // Accepted. The draft (edited or not) now proceeds to the next stage.
-  // Stage boundary: ticket 08 takes it from here via `git commit -F -`.
-  stdout.write(`${outcome.draft}\n`);
-  stderr.write("commitshi: draft accepted — commit stage (git commit -F -) lands in the next ticket\n");
+  // Accepted. The commit stage runs `git commit -F -` with the draft on
+  // stdin so the user's hooks and signing fire exactly as on a hand-typed
+  // commit. The tool never stages anything, and a failing commit exits
+  // non-zero with git's own message — no swallowed draft, no claimed
+  // success.
+  const committed = await (deps.commit ?? ((message: string) => commitAcceptedMessage(message)))(outcome.draft);
+  if (!committed.ok) {
+    stderr.write(`${committed.message}\n`);
+    return committed.exitCode;
+  }
+  stdout.write("commitshi: committed\n");
   return 0;
 }

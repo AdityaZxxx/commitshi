@@ -162,17 +162,22 @@ describe("main", () => {
       await git(workdir, "add", "a.txt");
     }
 
-    test("Enter accepts the draft and proceeds to the next stage boundary (no commit)", async () => {
+    test("Enter accepts the draft and hands it to the commit seam", async () => {
       await stageA();
       const out = capture();
       const err = capture();
+      let committed: string | undefined; // Enter-accept
       const code = await main([], out.stream, err.stream, {
         chat: stubChat,
         loop: interactive([""]),
+        commit: async (message: string) => {
+          committed = message;
+          return { ok: true as const };
+        },
       });
       expect(code).toBe(0);
-      expect(out.text()).toContain("feat(): add a.txt");
-      expect(err.text()).toContain("commit stage");
+      expect(committed).toBe("feat(): add a.txt");
+      expect(out.text()).toContain("committed");
       expect(err.text()).not.toContain("canceled");
     });
 
@@ -181,6 +186,7 @@ describe("main", () => {
       const out = capture();
       const err = capture();
       const edited = "fix(a): hand-edited in the editor";
+      let committed: string | undefined; // edited draft
       const code = await main([], out.stream, err.stream, {
         chat: stubChat,
         loop: interactive(["e", ""], {
@@ -190,9 +196,13 @@ describe("main", () => {
             return 0;
           },
         }),
+        commit: async (message: string) => {
+          committed = message;
+          return { ok: true as const };
+        },
       });
       expect(code).toBe(0);
-      expect(out.text()).toContain(edited);
+      expect(committed).toBe(edited);
     });
 
     test("e with no $EDITOR fails loud, never a silent accept", async () => {
@@ -216,25 +226,36 @@ describe("main", () => {
       };
       const out = capture();
       const err = capture();
+      let committed: string | undefined; // regenerated draft
       const code = await main([], out.stream, err.stream, {
         chat,
         loop: interactive(["r", ""]),
+        commit: async (message: string) => {
+          committed = message;
+          return { ok: true as const };
+        },
       });
       expect(code).toBe(0);
       expect(calls).toBe(2); // first draft + one regeneration
-      expect(out.text()).toContain("draft 2");
+      expect(committed).toBe("feat(): draft 2");
     });
 
     test("q cancels — no commit, exit 0", async () => {
       await stageA();
       const out = capture();
       const err = capture();
+      let commitCalls = 0;
       const code = await main([], out.stream, err.stream, {
         chat: stubChat,
         loop: interactive(["q"]),
+        commit: async () => {
+          commitCalls++;
+          return { ok: true as const };
+        },
       });
       expect(code).toBe(0);
       expect(err.text()).toContain("canceled");
+      expect(commitCalls).toBe(0); // a canceled draft never reaches the commit stage
     });
 
     test("no TTY (stdin piped) without --no-commit fails loud, never a silent accept", async () => {
