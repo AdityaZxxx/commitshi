@@ -104,18 +104,42 @@ describe("main", () => {
       expect(err.text()).toContain("nothing staged");
     });
 
-    test("repo with staged changes reaches the pipeline entry without crashing", async () => {
+    // Ticket 05 tracer bullet: a stubbed model stands in for the provider so
+    // the end-to-end path (guard → diff → compact → template → fill → print)
+    // runs offline. The live round trip is proven separately against Ollama.
+    const stubChat = async () => ({
+      ok: true as const,
+      content: "type: feat\nscope: -\nsummary: add a.txt\nbody: -",
+    });
+
+    test("--no-commit prints the drafted message from the staged diff, end to end", async () => {
       await git(workdir, "init", "-q");
       await writeFile(join(workdir, "a.txt"), "one\n");
       await git(workdir, "add", "a.txt");
 
       const out = capture();
       const err = capture();
-      const code = await main([], out.stream, err.stream);
-      // Generation lands in ticket 05; the scaffold just has to get here gracefully.
-      expect(out.text()).toContain("not implemented");
+      const code = await main(["--no-commit"], out.stream, err.stream, { chat: stubChat });
+      expect(code).toBe(0);
+      expect(out.text()).toContain("feat(): add a.txt");
       expect(err.text()).not.toContain("nothing staged");
       expect(err.text()).not.toContain("not a git repository");
+    });
+
+    test("a strict-fill violation is rejected loud, no draft printed", async () => {
+      await git(workdir, "init", "-q");
+      await writeFile(join(workdir, "a.txt"), "one\n");
+      await git(workdir, "add", "a.txt");
+
+      const out = capture();
+      const err = capture();
+      // The model emits the token names back — the classic tiny-model echo.
+      const code = await main(["--no-commit"], out.stream, err.stream, {
+        chat: async () => ({ ok: true as const, content: "{type}: {summary}" }),
+      });
+      expect(code).toBe(1);
+      expect(err.text()).toContain("template contract");
+      expect(out.text().trim()).toBe("");
     });
   });
 });
