@@ -4,9 +4,15 @@
 
 **Blocked by:** 05 — Prompt + template + generation
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] `--instructions` text appears in the prompt as its own block and is honored by the model
-- [ ] Instructions reword summary/body per user request; token-fill shape is still enforced
-- [ ] `--template` overrides configured/global template for that run only
-- [ ] Neither overrides are written to any config; later runs use committed values
+- [x] `--instructions` text appears in the prompt as its own block and is honored by the model
+- [x] Instructions reword summary/body per user request; token-fill shape is still enforced
+- [x] `--template` overrides configured/global template for that run only
+- [x] Neither overrides are written to any config; later runs use committed values
+
+## Resolution
+
+- `--instructions` appends a `### User instructions` block in `generateDraft` (src/pipeline.ts) after `### Compact diff`; the block tells the model the instructions outrank template/default but can never break the fill contract. Whitespace-only instructions omit the block (empty = default).
+- `--template` was already routed through `resolveKey("template", { flags })` at flag precedence; tests now prove it beats a committed template for one run and that later runs fall back to the committed template (nothing written back — no config write seam exists anywhere).
+- strictFill shape discipline is unchanged: a test proves an instruction-demanded extra field is still rejected as a template-contract violation.

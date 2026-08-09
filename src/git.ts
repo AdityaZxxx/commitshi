@@ -44,6 +44,30 @@ export async function stagedDiff(cwd: string = process.cwd()): Promise<string> {
   return runGit(["diff", "--cached"], cwd);
 }
 
+/**
+ * The style history: the most recent commit subjects (newest first, ~8).
+ * Read ONLY on the explicit `--style` opt-in — without the flag, nothing
+ * ever calls this. A fresh repo (unborn HEAD) or any other history-read
+ * failure degrades to an empty list; missing history is never an error.
+ */
+export async function recentCommitSubjects(
+  limit: number = 8,
+  cwd: string = process.cwd(),
+): Promise<readonly string[]> {
+  try {
+    const { stdout } = await execFileAsync("git", ["log", `-${limit}`, "--format=%s"], {
+      cwd,
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    return stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line !== "");
+  } catch {
+    return [];
+  }
+}
+
 export type GuardResult =
   | Readonly<{ ok: true }>
   | Readonly<{ ok: false; reason: string; exitCode: number }>;

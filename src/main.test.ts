@@ -270,5 +270,104 @@ describe("main", () => {
       expect(err.text()).toContain("interactive terminal");
       expect(out.text()).not.toContain("feat(): add a.txt");
     });
+
+    // Ticket 09: --instructions reaches the prompt end to end, with the
+    // precedence contract stated to the model.
+    test("--instructions appends the block to the prompt (end to end through main)", async () => {
+      await stageA();
+      const out = capture();
+      const err = capture();
+      let seenUser = "";
+      const chat: import("./pipeline.ts").PipelineDeps["chat"] = async (_d, req) => {
+        seenUser = req.messages[1]?.content ?? "";
+        return { ok: true as const, content: "type: chore\nscope: -\nsummary: tidy the a.txt file\nbody: -" };
+      };
+      const code = await main(["--no-commit", "--instructions", "treat this as a chore, not a feature"], out.stream, err.stream, {
+        chat,
+      });
+      expect(code).toBe(0);
+      expect(seenUser).toContain("### User instructions");
+      expect(seenUser).toContain("treat this as a chore");
+      expect(out.text()).toContain("chore(): tidy the a.txt file");
+    });
+
+    // Ticket 09: --template beats any committed template for one run. The
+    // repo has no commitshi.template configured, so the default wins unless
+    // the flag overrides it here.
+    test("--template overrides the default template for one run only", async () => {
+      await stageA();
+      const out = capture();
+      const err = capture();
+      const code = await main(
+        ["--no-commit", "--template", "{summary}"],
+        out.stream,
+        err.stream,
+        { chat: async () => ({ ok: true as const, content: "summary: just the summary line" }) },
+      );
+      expect(code).toBe(0);
+      expect(out.text()).toContain("just the summary line");
+      expect(out.text()).not.toContain("feat():");
+    });
+
+    // Ticket 10: without --style no history is read even when commits exist.
+    // The prompt must not contain the style block.
+    test("no --style: prompt never carries history even with commits present", async () => {
+      await stageA();
+      // create one prior commit so history WOULD be non-empty if read
+      await git(workdir, "commit", "-q", "-m", "feat: prior history exists");
+      await writeFile(join(workdir, "b.txt"), "two\n");
+      await git(workdir, "add", "b.txt");
+
+      let seenUser = "";
+      const chat: import("./pipeline.ts").PipelineDeps["chat"] = async (_d, req) => {
+        seenUser = req.messages[1]?.content ?? "";
+        return { ok: true as const, content: "type: feat\nscope: -\nsummary: add b.txt\nbody: -" };
+      };
+      const out = capture();
+      const err = capture();
+      const code = await main(["--no-commit"], out.stream, err.stream, { chat });
+      expect(code).toBe(0);
+      expect(seenUser).not.toContain("### Style history");
+      expect(seenUser).not.toContain("feat: prior history exists");
+    });
+
+    // Ticket 10: --style reads history once, includes the subject, drafts.
+    test("--style includes the recent subjects in the prompt", async () => {
+      await stageA();
+      await git(workdir, "commit", "-q", "-m", "feat(cli): add the scaffold");
+      await git(workdir, "commit", "-q", "--allow-empty", "-m", "fix(cli): quiet the spinner");
+      await writeFile(join(workdir, "b.txt"), "two\n");
+      await git(workdir, "add", "b.txt");
+
+      let seenUser = "";
+      const chat: import("./pipeline.ts").PipelineDeps["chat"] = async (_d, req) => {
+        seenUser = req.messages[1]?.content ?? "";
+        return { ok: true as const, content: "type: feat\nscope: cli\nsummary: add b.txt\nbody: -" };
+      };
+      const out = capture();
+      const err = capture();
+      const code = await main(["--no-commit", "--style"], out.stream, err.stream, { chat });
+      expect(code).toBe(0);
+      expect(seenUser).toContain("### Style history");
+      expect(seenUser).toContain("fix(cli): quiet the spinner");
+      expect(seenUser).toContain("feat(cli): add the scaffold");
+      expect(out.text()).toContain("feat(cli): add b.txt");
+    });
+
+    // Ticket 10: fresh repo + --style degrades gracefully (unborn HEAD).
+    test("a fresh repo with --style still drafts, with no style block", async () => {
+      await stageA(); // stages a.txt; no commits yet at all
+      let seenUser = "";
+      const chat: import("./pipeline.ts").PipelineDeps["chat"] = async (_d, req) => {
+        seenUser = req.messages[1]?.content ?? "";
+        return { ok: true as const, content: "type: feat\nscope: -\nsummary: add a.txt\nbody: -" };
+      };
+      const out = capture();
+      const err = capture();
+      const code = await main(["--no-commit", "--style"], out.stream, err.stream, { chat });
+      expect(code).toBe(0);
+      expect(seenUser).not.toContain("### Style history");
+      expect(out.text()).toContain("feat(): add a.txt");
+    });
   });
 });

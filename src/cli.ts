@@ -2,6 +2,7 @@ export type CliFlags = Readonly<{
   help: boolean;
   noCommit: boolean;
   regenerate: boolean;
+  style: boolean;
   instructions?: string;
   template?: string;
   provider?: string;
@@ -21,6 +22,7 @@ FLAGS:
     --no-commit             Print the commit draft and stop; never commit
     --regenerate            Generate a fresh commit draft for the same staged diff
     --instructions "<text>" One-shot instructions for the model (outranks the template)
+    --style                 Add the last ~8 commit subjects to the prompt (opt-in; history is never read otherwise)
     --template "<string>"   One-shot template override (tokens: {type} {scope} {summary} {body})
     --provider <name>       One-shot provider override
     --model <name>          One-shot model override
@@ -39,16 +41,18 @@ const VALUE_FLAGS: Readonly<Record<string, keyof CliFlags>> = {
 const BOOLEAN_FLAGS: Readonly<Record<string, keyof CliFlags>> = {
   "--no-commit": "noCommit",
   "--regenerate": "regenerate",
+  "--style": "style",
   "--help": "help",
   "-h": "help",
 };
 
 export function parseArgs(args: readonly string[]): ParseResult {
-  const flags: Record<keyof Pick<CliFlags, "help" | "noCommit" | "regenerate">, boolean> &
+  const flags: Record<keyof Pick<CliFlags, "help" | "noCommit" | "regenerate" | "style">, boolean> &
     Partial<Record<"instructions" | "template" | "provider" | "model", string>> = {
     help: false,
     noCommit: false,
     regenerate: false,
+    style: false,
   };
 
   for (let i = 0; i < args.length; i++) {

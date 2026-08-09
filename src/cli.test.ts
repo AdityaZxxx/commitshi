@@ -6,15 +6,21 @@ describe("parseArgs", () => {
     const result = parseArgs([]);
     expect(result).toEqual({
       ok: true,
-      flags: { help: false, noCommit: false, regenerate: false },
+      flags: { help: false, noCommit: false, regenerate: false, style: false },
     });
   });
 
   test("boolean flags parse", () => {
-    const result = parseArgs(["--no-commit", "--regenerate"]);
+    const result = parseArgs(["--no-commit", "--regenerate", "--style"]);
     expect(result.ok && result.flags.noCommit).toBe(true);
     expect(result.ok && result.flags.regenerate).toBe(true);
+    expect(result.ok && result.flags.style).toBe(true);
     expect(result.ok && result.flags.help).toBe(false);
+  });
+
+  test("--style off by default", () => {
+    const result = parseArgs(["--no-commit"]);
+    expect(result.ok && result.flags.style).toBe(false);
   });
 
   test("value flags capture their following argument", () => {
@@ -34,6 +40,14 @@ describe("parseArgs", () => {
     expect(result.flags.template).toBe("{type}: {summary}");
     expect(result.flags.provider).toBe("openai");
     expect(result.flags.model).toBe("gpt-4o-mini");
+  });
+
+  test("--style combined with value flags parses", () => {
+    const result = parseArgs(["--style", "--instructions", "short subject"]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.flags.style).toBe(true);
+    expect(result.flags.instructions).toBe("short subject");
   });
 
   test("unknown flag is a clean error, not a throw", () => {
@@ -60,10 +74,16 @@ describe("parseArgs", () => {
     expect(result.ok).toBe(false);
   });
 
+  test("a value flag followed by --style is an error, not a swallowed flag", () => {
+    const result = parseArgs(["--instructions", "--style"]);
+    expect(result.ok).toBe(false);
+  });
+
   test("usage text lists every documented flag for --help", () => {
     for (const flag of [
       "--no-commit",
       "--regenerate",
+      "--style",
       "--instructions",
       "--template",
       "--provider",

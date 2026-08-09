@@ -16,6 +16,13 @@ import {
 
 export type PipelineDeps = Readonly<{
   stagedDiff: () => Promise<string>;
+  /**
+   * The --style opt-in seam: wired to the git history reader only when the
+   * flag is passed, ABSENT otherwise. "Absent means never read" is the
+   * no-silent-history guarantee — a code path that cannot read rather than
+   * one that promises not to.
+   */
+  styleHistory?: () => Promise<readonly string[]>;
   /** Resolves a config key: the `makeResolveKey` signature (key, {flags}). */
   resolveKey: (
     key: string,
@@ -24,8 +31,15 @@ export type PipelineDeps = Readonly<{
   /** Resolves the API key for a named provider. */
   resolveApiKey: (provider: Provider) => Promise<Readonly<{ value: string; source: string }> | null>;
   chat?: (deps: ChatDeps, req: Parameters<typeof chatCompletions>[1]) => Promise<CompletionResult>;
-  /** One-shot CLI overrides, applied at the top of the precedence chain. */
-  flags?: Readonly<{ model?: string; template?: string; baseUrl?: string; provider?: string }>;
+  /** One-shot CLI overrides, applied at the top of the precedence chain. None are ever persisted. */
+  flags?: Readonly<{
+    model?: string;
+    template?: string;
+    baseUrl?: string;
+    provider?: string;
+    /** --instructions: one-shot; outranks the template below, never persisted. */
+    instructions?: string;
+  }>;
 }>;
 
 export type DraftResult =
@@ -106,11 +120,52 @@ export async function generateDraft(deps: PipelineDeps): Promise<DraftResult> {
     return { ok: false, exitCode: 2, message: `commitshi: template is invalid — ${parsed.error}` };
   }
 
+  // Optional one-shot prompt blocks (tickets 09, 10). Each is appended only
+  // when the corresponding flag was passed; with neither flag the prompt is
+  // exactly the ticket-05 default, byte for byte.
+  const extras: string[] = [];
+
+  if (deps.styleHistory !== undefined) {
+    // History must never break the draft: a failed read degrades to no
+    // block, exactly like a fresh repo with no commits yet.
+    let subjects: readonly string[] = [];
+    try {
+      subjects = await deps.styleHistory();
+    } catch {
+      subjects = [];
+    }
+    if (subjects.length > 0) {
+      extras.push(
+        [
+          "### Style history",
+          "",
+          "Recent commit subjects from this repository, newest first:",
+          ...subjects.map((s) => `- ${s}`),
+          "Match their local conventions (type vocabulary, scope style, summary phrasing) where they agree.",
+        ].join("\n"),
+      );
+    }
+  }
+
+  const instructions = flags.instructions?.trim() ?? "";
+  if (instructions !== "") {
+    extras.push(
+      [
+        "### User instructions",
+        "",
+        instructions,
+        "",
+        "These instructions outrank the template and default conventions: they may steer the type/scope choice and reword the summary and body, but they can never break the fill contract — exactly one value per template line, and no text outside those lines.",
+      ].join("\n"),
+    );
+  }
+
   const system = buildSystemPrompt(parsed);
   const user = [
     "### Compact diff",
     "",
     renderCompacted(compacted),
+    ...extras,
     "",
     "Fill every template token from this diff only.",
   ].join("\n");

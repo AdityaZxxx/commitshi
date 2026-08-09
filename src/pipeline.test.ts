@@ -1,0 +1,236 @@
+import { describe, expect, test } from "bun:test";
+import { generateDraft, type PipelineDeps } from "./pipeline.ts";
+
+// Ticket 09 + 10: one-shot --instructions / --template / --style flags.
+// The chat seam captures the exact prompt sent to the model so every test
+// asserts on prompt content without a live model.
+
+const DIFF = [
+  "diff --git a/src/login.ts b/src/login.ts",
+  "new file mode 100644",
+  "index 0000000..e69de29",
+  "--- /dev/null",
+  "+++ b/src/login.ts",
+  "@@ -0,0 +1 @@",
+  "+export const login = () => session();",
+].join("\n");
+
+/** A resolveKey that honors flags (top of the precedence chain) then "committed" config values. */
+const makeResolveKey =
+  (committed: Partial<Record<string, string>> = {}): PipelineDeps["resolveKey"] =>
+  async (key, opts) => {
+    const fromFlag = opts?.flags?.[key];
+    if (fromFlag !== undefined && fromFlag !== "") return { value: fromFlag, source: "flag" };
+    const value = committed[key];
+    if (value !== undefined && value !== "") return { value, source: "config file" };
+    return null;
+  };
+
+const LOCAL_BASE = { baseUrl: "http://localhost:11434/v1" };
+
+/** A chat stub that records the prompt content and returns a canned fill-contract reply. */
+const makeRecordingChat = (reply: string, captured: { user?: string; system?: string }): PipelineDeps["chat"] =>
+  async (_deps, req) => {
+    captured.system = req.messages[0]?.content ?? "";
+    captured.user = req.messages[1]?.content ?? "";
+    return { ok: true as const, content: reply };
+  };
+
+const baseDeps = (committed: Partial<Record<string, string>> = {}): PipelineDeps => ({
+  stagedDiff: async () => DIFF,
+  resolveKey: makeResolveKey({ baseUrl: LOCAL_BASE.baseUrl, ...committed }),
+  resolveApiKey: async () => null,
+  chat: async () => ({ ok: true as const, content: "" }), // replaced per test
+});
+
+const OK_REPLY = "type: feat\nscope: auth\nsummary: add login helper\nbody: -";
+
+describe("generateDraft — default prompt is untouched (regression from 05)", () => {
+  test("no flags: user block and style block are absent, prompt is byte-stable", async () => {
+    const captured: { user?: string } = {};
+    const deps: PipelineDeps = { ...baseDeps(), chat: makeRecordingChat(OK_REPLY, captured) };
+    const first = await generateDraft(deps);
+    expect(first.ok).toBe(true);
+
+    expect(captured.user).not.toContain("### Style history");
+    expect(captured.user).not.toContain("### User instructions");
+
+    // Byte-identical across runs: the flag-less prompt is the ticket-05
+    // shape — compact diff + fixed closing instruction, nothing else.
+    const again: { user?: string } = {};
+    await generateDraft({ ...baseDeps(), chat: makeRecordingChat(OK_REPLY, again) });
+    expect(again.user).toBe(captured.user);
+    // Contract: diff first, closing fill instruction last, and no
+    // ticket-09/10 sections (Staged changes header inside the digest is
+    // the second header — that one predates these tickets).
+    expect(captured.user).toMatch(/^### Compact diff\n\n### Staged changes/);
+    expect(captured.user).toMatch(/\n\nFill every template token from this diff only\.$/);
+    expect(captured.user).not.toContain("### User instructions");
+    expect(captured.user).not.toContain("### Style history");
+  });
+});
+
+describe("generateDraft — --instructions (ticket 09)", () => {
+  test("instructions land in the prompt as their own block, after the diff", async () => {
+    const captured: { user?: string } = {};
+    const deps: PipelineDeps = {
+      ...baseDeps(),
+      chat: makeRecordingChat(OK_REPLY, captured),
+      flags: { instructions: "always use the type 'refactor' and skip the scope" },
+    };
+    const result = await generateDraft(deps);
+    expect(result.ok).toBe(true);
+    expect(captured.user).toContain("### User instructions");
+    expect(captured.user).toContain("always use the type 'refactor'");
+    // Precedence wording told to the model: instructions outrank the template.
+    expect(captured.user).toContain("outrank");
+    expect(captured.user!.indexOf("### Compact diff")).toBeLessThan(captured.user!.indexOf("### User instructions"));
+  });
+
+  test("instructions tell the model the strict shape still holds (no fifth token)", async () => {
+    const captured: { user?: string } = {};
+    const deps: PipelineDeps = {
+      ...baseDeps(),
+      chat: makeRecordingChat(OK_REPLY, captured),
+      flags: { instructions: "reword the summary" },
+    };
+    await generateDraft(deps);
+    expect(captured.user).toContain("fill contract");
+    expect(captured.user).toMatch(/exactly one value per template line/);
+  });
+
+  test("the fill contract rejects an extra field even when instructions asked for it", async () => {
+    // A single-token template: the un-wanted `notes:` line can absorb into
+    // nothing, so strictFill rejects it as stray prose — instructions never
+    // get a fifth token, whatever the model emitted.
+    const captured: { user?: string } = {};
+    const deps: PipelineDeps = {
+      ...baseDeps(),
+      chat: makeRecordingChat("summary: add the login helper\nnotes: extra the user demanded", captured),
+      flags: { instructions: "also add a freeform notes paragraph after the message" },
+    };
+    const result = await generateDraft({ ...deps, flags: { ...deps.flags, template: "{summary}" } });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("template contract");
+  });
+
+  test("whitespace-only instructions omit the block entirely (empty = default)", async () => {
+    const captured: { user?: string } = {};
+    const deps: PipelineDeps = {
+      ...baseDeps(),
+      chat: makeRecordingChat(OK_REPLY, captured),
+      flags: { instructions: "   \n " },
+    };
+    const result = await generateDraft(deps);
+    expect(result.ok).toBe(true);
+    expect(captured.user).not.toContain("### User instructions");
+  });
+});
+
+describe("generateDraft — --template one-shot override (ticket 09)", () => {
+  const COMMITTED = "{type}({scope}): {summary}";
+
+  test("--template beats the configured template for that run only", async () => {
+    const captured: { user?: string } = {};
+    const deps: PipelineDeps = {
+      ...baseDeps({ template: COMMITTED }), // persisted config supplies COMMITTED…
+      chat: makeRecordingChat("type: fix\nsummary: squash the flake", captured),
+      // …but the flag's template wins this run.
+      flags: { template: "{type}: {summary}" },
+    };
+    const result = await generateDraft(deps);
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.message).toBe("fix: squash the flake");
+    // The prompt names exactly the flag template's tokens — the persisted
+    // template's {scope} token never reaches the model.
+    expect(captured.user).toContain("Fill every template token");
+  });
+
+  test("the configured template persists for later runs (flag is not written back)", async () => {
+    const captured: { user?: string } = {};
+    // No --template flag: the committed template from config applies.
+    const deps: PipelineDeps = {
+      ...baseDeps({ template: COMMITTED }),
+      // The reply fills exactly the committed template's three tokens.
+      chat: makeRecordingChat("type: feat\nscope: auth\nsummary: add login helper", captured),
+    };
+    const result = await generateDraft(deps);
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.message).toBe("feat(auth): add login helper");
+  });
+});
+
+describe("generateDraft — --style (ticket 10)", () => {
+  test("no styleHistory seam: the chat runs once and the prompt carries no history at all", async () => {
+    // "Absent means never read" — with no seam wired there is no history
+    // code path to invoke; the assertion is inside the chat stub itself.
+    const result = await generateDraft({
+      ...baseDeps(),
+      styleHistory: undefined,
+      chat: async (_d, req) => {
+        expect(req.messages[1]?.content).not.toContain("### Style history");
+        return { ok: true as const, content: OK_REPLY };
+      },
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  test("--style includes the recent subjects as a block after the diff", async () => {
+    const subjects = ["feat(auth): add session cookie", "fix(ci): pin ubuntu runner", "chore: bump deps"];
+    const captured: { user?: string } = {};
+    const deps: PipelineDeps = {
+      ...baseDeps(),
+      styleHistory: async () => subjects,
+      chat: makeRecordingChat(OK_REPLY, captured),
+    };
+    const result = await generateDraft(deps);
+    expect(result.ok).toBe(true);
+    expect(captured.user).toContain("### Style history");
+    for (const s of subjects) expect(captured.user).toContain(s);
+    expect(captured.user!.indexOf("### Compact diff")).toBeLessThan(captured.user!.indexOf("### Style history"));
+  });
+
+  test("empty history (fresh repo) degrades gracefully — no block, draft still generates", async () => {
+    const captured: { user?: string } = {};
+    const deps: PipelineDeps = {
+      ...baseDeps(),
+      styleHistory: async () => [], // fresh repo, unborn HEAD
+      chat: makeRecordingChat(OK_REPLY, captured),
+    };
+    const result = await generateDraft(deps);
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.message).toBe("feat(auth): add login helper");
+    expect(captured.user).not.toContain("### Style history");
+  });
+
+  test("history read failure inside the seam degrades to no block, no crash", async () => {
+    const captured: { user?: string } = {};
+    const deps: PipelineDeps = {
+      ...baseDeps(),
+      styleHistory: async () => {
+        throw new Error("git log failed");
+      },
+      chat: makeRecordingChat(OK_REPLY, captured),
+    };
+    // History must never break the draft — a failing seam is exactly the
+    // fresh-repo case.
+    const result = await generateDraft(deps);
+    expect(result.ok).toBe(true);
+    expect(captured.user).not.toContain("### Style history");
+  });
+
+  test("instructions and --style combine; both blocks appear, diff first", async () => {
+    const captured: { user?: string } = {};
+    const deps: PipelineDeps = {
+      ...baseDeps(),
+      styleHistory: async () => ["chore: bump deps"],
+      flags: { instructions: "short subject" },
+      chat: makeRecordingChat(OK_REPLY, captured),
+    };
+    const result = await generateDraft(deps);
+    expect(result.ok).toBe(true);
+    expect(captured.user).toContain("### Style history");
+    expect(captured.user).toContain("### User instructions");
+    expect(captured.user!.indexOf("### Compact diff")).toBeLessThan(captured.user!.indexOf("### Style history"));
+  });
+});

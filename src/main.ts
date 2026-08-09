@@ -1,5 +1,5 @@
 import { parseArgs, USAGE } from "./cli.ts";
-import { guardStagedChanges, stagedDiff } from "./git.ts";
+import { guardStagedChanges, recentCommitSubjects, stagedDiff } from "./git.ts";
 import { makeResolveApiKey, makeResolveKey } from "./config.ts";
 import { generateDraft, type PipelineDeps } from "./pipeline.ts";
 import { interactLoop, type AskKey, type DraftAttempt } from "./loop.ts";
@@ -63,10 +63,19 @@ export async function main(
   const generate = (): Promise<Awaited<ReturnType<typeof generateDraft>>> =>
     generateDraft({
       stagedDiff: () => stagedDiff(),
+      // Wire the history seam ONLY when the user opted in with --style:
+      // flags.style && recentCommitSubjects — without the flag the dep is
+      // absent and the no-history guarantee is structural, not a promise.
+      styleHistory: flags.style ? () => recentCommitSubjects() : undefined,
       resolveKey: makeResolveKey(),
       resolveApiKey: makeResolveApiKey(),
       chat: deps.chat,
-      flags: { model: flags.model, template: flags.template, provider: flags.provider },
+      flags: {
+        model: flags.model,
+        template: flags.template,
+        provider: flags.provider,
+        instructions: flags.instructions,
+      },
     });
 
   const first = attemptFrom(await generate());
