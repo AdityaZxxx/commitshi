@@ -146,7 +146,7 @@ export async function main(
     result: Awaited<ReturnType<typeof generateDraft>>,
   ): DraftAttempt =>
     result.ok
-      ? { ok: true, draft: result.message, truncated: result.truncated }
+      ? { ok: true, draft: result.message, truncated: result.truncated, numstat: result.numstat }
       : { ok: false, exitCode: result.exitCode, message: result.message };
 
   const generate = (): Promise<Awaited<ReturnType<typeof generateDraft>>> =>

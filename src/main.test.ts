@@ -181,6 +181,17 @@ describe("main", () => {
       expect(out.text()).toContain("feat(): add a.txt");
       expect(err.text()).not.toContain("nothing staged");
       expect(err.text()).not.toContain("not a git repository");
+
+      // Ticket 13 regression: the presentation frame is interactive-only. Even
+      // with a TTY loop seam wired in, --no-commit never labels or colors.
+      const tOut = capture();
+      const tCode = await main(["--no-commit"], tOut.stream, capture().stream, {
+        chat: stubChat,
+        loop: { stdinIsTTY: true, stdoutIsTTY: true },
+      });
+      expect(tCode).toBe(0);
+      expect(tOut.text()).not.toContain("───");
+      expect(tOut.text()).not.toContain("\x1b[");
     });
 
     test("a strict-fill violation is rejected loud, no draft printed", async () => {

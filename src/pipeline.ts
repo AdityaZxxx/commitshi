@@ -3,7 +3,7 @@
 // commit; the model call and the git reads are the only IO, all injectable so
 // the whole path is testable without a live model.
 
-import { compact, renderCompacted } from "./compaction.ts";
+import { compact, renderCompacted, type NumstatEntry } from "./compaction.ts";
 import { chatCompletions, type ChatDeps, type CompletionResult } from "./provider/openai.ts";
 import type { Provider } from "./config.ts";
 import { isLocalBaseUrl } from "./config.ts";
@@ -49,7 +49,15 @@ export type PipelineDeps = Readonly<{
 }>;
 
 export type DraftResult =
-  | Readonly<{ ok: true; message: string; truncated: boolean; templateKind: string; baseUrl: string; model: string }>
+  | Readonly<{
+      ok: true;
+      message: string;
+      truncated: boolean;
+      numstat: readonly NumstatEntry[]; // per-file stats for the presentation frame
+      templateKind: string;
+      baseUrl: string;
+      model: string;
+    }>
   | Readonly<{ ok: false; exitCode: number; message: string }>;
 
 export const DEFAULT_BASE_URL = "https://api.openai.com/v1";
@@ -208,6 +216,7 @@ export async function generateDraft(deps: PipelineDeps): Promise<DraftResult> {
     ok: true,
     message: filled.message,
     truncated: compacted.truncated,
+    numstat: compacted.numstat,
     templateKind: parsed.kind,
     baseUrl,
     model,

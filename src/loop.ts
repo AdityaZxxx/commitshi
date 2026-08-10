@@ -15,6 +15,8 @@
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { unlink, writeFile } from "node:fs/promises";
+import { presentDraft, regenerating, resolveColors, shouldEmitColor } from "./presentation.ts";
+import type { NumstatEntry } from "./compaction.ts";
 
 /** One keypress from the user: "" for Enter, a letter otherwise; null on EOF. */
 export type AskKey = () => Promise<string | null>;
@@ -32,13 +34,15 @@ export type LoopDeps = Readonly<{
   spawn?: (editor: string, path: string) => Promise<number>;
   /** Key source seam; production reads single keypresses in raw mode. */
   ask?: AskKey;
+  /** Color-emission seam (tests); production derives it from TTY + NO_COLOR + CI. */
+  colorEnabled?: boolean;
   /** Produces a fresh draft for the same staged diff; failure ends the loop loud. */
   regenerate: () => Promise<DraftAttempt>;
 }>;
 
 /** One draft under consideration, or the loud failure to produce one. */
 export type DraftAttempt =
-  | Readonly<{ ok: true; draft: string; truncated: boolean }>
+  | Readonly<{ ok: true; draft: string; truncated: boolean; numstat: readonly NumstatEntry[] }>
   | Readonly<{ ok: false; exitCode: number; message: string }>;
 
 export type LoopResult =
@@ -162,6 +166,16 @@ export async function interactLoop(first: DraftAttempt, deps: LoopDeps): Promise
   const fileIo: FileIo = Bun;
   let attempt = first;
   let regenerations = 0;
+  let edited = false; // set after a successful $EDITOR round; shows the (edited) badge
+
+  // The color gate resolves once: TTY + !NO_COLOR + !CI. The render seam is
+  // presentDraft; the prompt string stays exactly the 12-pinned constant.
+  const env = { ...process.env, ...deps.env };
+  // getColorDepth / isTTY live on the real stream; they're probed optionally so
+  // the write-only test seam still satisfies the type.
+  const probe = deps.stdout as NodeJS.WriteStream;
+  const colorEnabled = deps.colorEnabled ?? shouldEmitColor(deps.stdout, env, stdoutIsTTY);
+  const colors = resolveColors(colorEnabled, probe.getColorDepth?.bind(probe));
 
   const injectedAsk = deps.ask !== undefined;
   const asker = injectedAsk ? { ask: deps.ask, close: () => {} } : makeKeyAsker(deps.stdin);
@@ -176,15 +190,18 @@ export async function interactLoop(first: DraftAttempt, deps: LoopDeps): Promise
       return { ok: false, exitCode: 1, message: attempt.message };
     }
     const draft = attempt.draft;
-    // The truncation note goes to stdout with the draft frame (not stderr) so
-    // the two can't scramble when hooks pipe the streams to different fds.
-    if (attempt.truncated) {
-      deps.stdout.write(
-        "commitshi: note — the staged diff exceeded the digest budget; the model saw a truncated digest\n",
-      );
-    }
-    // Show the current draft above the prompt so edits are visible.
-    deps.stdout.write(`\n${draft}\n\n${PROMPT}`);
+    // Render the framed draft: staged-changes numstat (with (truncated) badge
+    // in the label on a truncated digest), the numbered draft (subject in
+    // accent, (edited) badge once edited), then the prompt awaiting the key.
+    presentDraft(deps.stdout, {
+      draft,
+      draftNumber: 1 + regenerations,
+      edited,
+      truncated: attempt.truncated,
+      numstat: attempt.numstat,
+      prompt: PROMPT,
+      colors,
+    });
     const answer = await ask();
 
     if (answer === null) {
@@ -197,17 +214,19 @@ export async function interactLoop(first: DraftAttempt, deps: LoopDeps): Promise
       return { ok: true, action: "accepted", draft, regenerations };
     }
     if (answer === "e") {
-      const edited = await editDraft(draft, deps, fileIo);
-      if (!edited.ok) {
+      const editResult = await editDraft(draft, deps, fileIo);
+      if (!editResult.ok) {
         close();
-        return { ok: false, exitCode: 1, message: edited.message };
+        return { ok: false, exitCode: 1, message: editResult.message };
       }
-      attempt = { ok: true, draft: edited.text, truncated: false };
+      attempt = { ok: true, draft: editResult.text, truncated: false, numstat: attempt.numstat };
+      edited = true;
       continue;
     }
     if (answer === "r") {
       regenerations++;
-      deps.stdout.write("commitshi: regenerating…\n");
+      edited = false; // a fresh draft is the model's, not the edited one
+      deps.stdout.write(regenerating(1 + regenerations, stdoutIsTTY));
       attempt = await deps.regenerate();
       continue;
     }
