@@ -1,0 +1,31 @@
+# 11 — Constrained first-run setup wizard
+
+**What to build:** the one place config can be written. When commitshi can't proceed (no usable API config) in an interactive shell, it opens a small wizard capturing **base URL**, **API key**, **model** into `~/.config/commitshi/config` (existing path, TOML-compatible `key = value`), then the normal flow continues. `commitshi --setup` forces it, works outside a git repo, writes the config, and exits. Re-running prefills existing values and overwrites on confirm. The wizard is invisible for the whole life of the tool once configured.
+
+**Blocked by:** 02 — Config resolution (writes exactly the keys `makeResolveKey`/`makeResolveApiKey` read), 05 — pipeline (unusable-check triggers it pre-staging).
+
+**Status:** done
+
+- [x] `commitshi --setup` runs the wizard standalone (no git repo, no staged guard), writes `baseurl`/`model`/`openai_api_key` to `~/.config/commitshi/config`, exits clean — main.ts routes `--setup` to `runSetup` before any git/guard code; setup.test.ts asserts exit 0, the three keys, and no "not a git repository"/"nothing staged" output
+- [x] Wizard fields: URL (default `https://api.openai.com/v1`), API key (blank allowed, but rejected with a clear message if the URL is non-local), model (default `gpt-5.6-luna`) — Enter = accept the default; echoes input — the three `askField` prompts in src/setup.ts, `isLocalBaseUrl` gate on blank keys with a re-prompt refuse, and the echo test asserts no `***` masking
+- [x] Re-run / `--setup` on an existing file prefills current values, overwrite-on-confirm — `readConfigFile` prefill + `[y/N]` gate; the confirm-overwrite and reject-untouched tests pin both branches byte-for-byte
+- [x] Auto-trigger in a normal run when a usably-configured bundle is missing AND stdin/stdout is a TTY AND flags don't already cover it — non-TTY/`--no-commit` keeps the current "missing key → explain, exit 1" for both — the `stdinIsTTY && stdoutIsTTY && !flags.noCommit` gate in main.ts plus `flagsCoverBundle`/`configBundleUsable`; the piped `--no-commit` test asserts the pipeline's own refusal still fires with zero wizard opens
+- [x] In a normal run, the config check happens before the staging guard, so a fresh user gets "set it up first", not "nothing staged" — the trigger block sits above `guardStagedChanges()` in main.ts; the "before the staged guard" test asserts `err` never contains "nothing staged"
+- [x] Default model pinned at `gpt-5.6-luna` (not `gpt-5.6` — that aliases the flagship Sol tier); matches the prefill — `DEFAULT_MODEL = "gpt-5.6-luna"` in src/pipeline.ts, asserted equal to the wizard's `[gpt-5.6-luna]` prefill
+- [x] This is the **only** config-write path; ticket 09's static-scan assertion ("no config-write path anywhere") is de-scoped to "no writes outside the setup wizard" — the "no config writes outside the setup wizard" describe in src/setup.test.ts scans all shipped source for `Bun.write(`/`writeFile(`/`writeFileSync(`/`createWriteStream(` and asserts silence outside src/setup.ts (loop.ts's `$EDITOR` temp-file write is the one named, non-config exception)
+
+## Resolution
+
+- New module src/setup.ts is the tool's single config-write path. `runSetup(deps, stdout, stderr)` runs three `askField` prompts (URL, API key, model) over an injectable `nextLine` seam (production: a paste-safe line reader over `process.stdin`; tests script lines). Blank answers accept defaults/prefills; a blank key against a non-local URL refuses loudly and re-prompts; EOF/Ctrl-C aborts with nothing written.
+- The write reuses `defaultConfigFilePath(env)` (one source of truth for `~/.config/commitshi/config`), creates the dir with `mkdir(recursive)` and lands the text via `Bun.write` in exactly the `key = value` syntax `readConfigFile` parses. On a re-run over an existing file, unrelated keys, comments and hand-edits survive byte-for-byte: `updateConfigText` in src/config.ts rewrites only the three owned keys in place.
+- Overwrite-on-confirm: when any of `baseurl`/`model`/`openai_api_key` already exists, the wizard shows old values, shows the pending write, and requires an explicit `y` — `n`/Enter leaves the file untouched (exit 0).
+- src/cli.ts gains boolean `--setup` and value flag `--base-url` (mapped to `flags.baseUrl`); the pipeline's `flags.baseUrl` override was declared-but-unwired before this ticket, so main.ts now passes it through. USAGE lists both.
+- src/pipeline.ts: `DEFAULT_MODEL` is now `"gpt-5.6-luna"` (comment records the anti-alias rationale); `DEFAULT_BASE_URL` is exported; the local-endpoint regex became the shared, exported `isLocalBaseUrl` in src/config.ts, imported by pipeline + wizard + main so the "local needs no key" rule can never drift between the three checks.
+- main.ts ordering: `--help` → `--setup` early-exit → TTY+bundle auto-trigger → git guard → pipeline. The auto-trigger needs all three: both TTYs (seamed for tests), flags not covering the bundle (`flagsCoverBundle`: requires `--base-url`, plus key env for non-local or a local URL), and a resolved config that isn't usable (`configBundleUsable`: key via env or file for non-local baseUrl, local baseUrl exempt, `OPENAI_BASE_URL` fallback counted). Piped non-`--no-commit` runs and failed/canceled wizard runs get `missingKeyMessage`, which now also points at `commitshi --setup` and names the pinned default model. `bin/commitshi.ts` is a mode-only change (100755) that predates this ticket and is untouched.
+- Static scan (src/setup.test.ts, modeled on the ticket-10 history scan): `Bun.write(`, `writeFile(`, `writeFileSync(`, `createWriteStream(` appear in no shipped file other than src/setup.ts — loop.ts's tmpdir `$EDITOR` write is explicitly excused and asserted to never touch `defaultConfigFilePath`.
+
+## Prior discovery (kept)
+
+- Writes the keys resolution already reads: lowercase `baseurl`, `model`, `openai_api_key` (see `readConfigFile` parsing in src/config.ts).
+- No connectivity probe in the wizard (by design): a bad URL fails loudly at call time, not set-up time.
+- Positioning note: this refines the spec's "no wizard" claim — the constrained wizard bootstraps "stage, run commitshi, commit" and then disappears. Rejected options: renaming the config file to `.toml`; auto-detecting endpoints; probing before saving.

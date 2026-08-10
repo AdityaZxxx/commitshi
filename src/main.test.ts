@@ -46,7 +46,7 @@ describe("main", () => {
     const err = capture();
     const code = await main(["--help"], out.stream, err.stream);
     expect(code).toBe(0);
-    for (const flag of ["--no-commit", "--regenerate", "--instructions", "--template", "--provider", "--model"]) {
+    for (const flag of ["--no-commit", "--regenerate", "--instructions", "--template", "--provider", "--model", "--setup", "--base-url"]) {
       expect(out.text()).toContain(flag);
     }
     expect(err.text()).toBe("");
@@ -102,6 +102,63 @@ describe("main", () => {
       const code = await main([], capture().stream, err.stream);
       expect(code).not.toBe(0);
       expect(err.text()).toContain("nothing staged");
+    });
+
+    // Ticket 11: pre-staging trigger. A fresh user (empty config, no
+    // OPENAI_API_KEY, nothing staged) on a TTY gets the wizard, NOT the
+    // "nothing staged" error — the check runs before guardStagedChanges.
+    // The setup seam stands in for the wizard so the assertion is on the
+    // main.ts wiring; the same scenario end-to-end through the pipeline's
+    // own refusal lives in setup.test.ts.
+    test("empty config on a TTY opens the wizard before the staged guard, never 'nothing staged'", async () => {
+      const dir = realpathSync(await mkdtemp(join(tmpdir(), "commitshi-setup-")));
+      const configPath = join(dir, "commitshi", "config");
+      const out = capture();
+      const err = capture();
+      let opened = 0;
+      const code = await main([], out.stream, err.stream, {
+        config: { configFilePath: configPath, env: {}, gitConfigGet: async () => null },
+        stdinIsTTY: true,
+        stdoutIsTTY: true,
+        setup: async () => {
+          opened++;
+          return { exitCode: 1 };
+        },
+      });
+      expect(opened).toBe(1);
+      expect(code).toBe(1);
+      expect(err.text()).not.toContain("nothing staged");
+      expect(err.text()).toContain("no API key");
+    });
+
+    test("a fully flag/env-covered one-shot skip: the wizard never opens and the guard runs", async () => {
+      const dir = realpathSync(await mkdtemp(join(tmpdir(), "commitshi-setup-")));
+      const configPath = join(dir, "commitshi", "config");
+      const out = capture();
+      const err = capture();
+      let opened = 0;
+      const code = await main(
+        ["--no-commit", "--base-url", "https://api.example.com/v1", "--model", "some-model"],
+        out.stream,
+        err.stream,
+        {
+          chat: stubChat,
+          config: {
+            configFilePath: configPath,
+            env: { OPENAI_API_KEY: "sk-flag-run" },
+            gitConfigGet: async () => null,
+          },
+          stdinIsTTY: true,
+          stdoutIsTTY: true,
+          setup: async () => {
+            opened++;
+            return { exitCode: 0 };
+          },
+        },
+      );
+      expect(opened).toBe(0);
+      expect(code).not.toBe(0);
+      expect(err.text()).toContain("not a git repository");
     });
 
     // Ticket 05 tracer bullet: a stubbed model stands in for the provider so

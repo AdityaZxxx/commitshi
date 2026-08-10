@@ -6,6 +6,7 @@
 import { compact, renderCompacted } from "./compaction.ts";
 import { chatCompletions, type ChatDeps, type CompletionResult } from "./provider/openai.ts";
 import type { Provider } from "./config.ts";
+import { isLocalBaseUrl } from "./config.ts";
 import {
   buildFillInstructions,
   DEFAULT_CONVENTIONAL_TEMPLATE,
@@ -13,6 +14,11 @@ import {
   strictFill,
   type TemplateParse,
 } from "./template.ts";
+
+// Re-exported so the setup wizard and pipeline share one source of truth:
+// the URL the wizard offers as default is exactly the one the pipeline
+// falls back to, and the local-endpoint check never drifts apart.
+export { isLocalBaseUrl };
 
 export type PipelineDeps = Readonly<{
   stagedDiff: () => Promise<string>;
@@ -46,8 +52,10 @@ export type DraftResult =
   | Readonly<{ ok: true; message: string; truncated: boolean; templateKind: string; baseUrl: string; model: string }>
   | Readonly<{ ok: false; exitCode: number; message: string }>;
 
-const DEFAULT_BASE_URL = "https://api.openai.com/v1";
-const DEFAULT_MODEL = "gpt-4o-mini";
+export const DEFAULT_BASE_URL = "https://api.openai.com/v1";
+// Cheap, fast, right-sized for a ~600-token commit subject. Deliberately
+// NOT the `gpt-5.6` alias, which routes to the flagship Sol tier ($5/$30).
+export const DEFAULT_MODEL = "gpt-5.6-luna";
 
 /** Builds the system prompt: role + strict contract, tuned to the template's tokens. */
 function buildSystemPrompt(templateParse: Extract<TemplateParse, { ok: true }>): string {
@@ -95,7 +103,7 @@ export async function generateDraft(deps: PipelineDeps): Promise<DraftResult> {
   const baseUrl = baseUrlR?.value ?? process.env.OPENAI_BASE_URL ?? DEFAULT_BASE_URL;
   const model = modelR?.value ?? DEFAULT_MODEL;
 
-  const isLocal = /^https?:\/\/(localhost|127(?:\.\d{1,3}){3}|\[?::1\]?)(:\d+)?\b/i.test(baseUrl);
+  const isLocal = isLocalBaseUrl(baseUrl);
   if (!isLocal && (apiKeyR === null || apiKeyR.value === "")) {
     return {
       ok: false,

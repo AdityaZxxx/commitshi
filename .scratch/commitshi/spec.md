@@ -4,7 +4,9 @@ A CLI that generates commit messages from the staged diff using an LLM, then wal
 
 ## Position (product gap)
 
-Fast, cheap, no wizard, matches the repo's own voice. Built from dissatisfaction with competitor tools that were provider-locked, verbose, or spent tokens on expensive chunk-and-synthesis for large diffs.
+Fast, cheap, no ceremony, matches the repo's own voice. Built from dissatisfaction with competitor tools that were provider-locked, verbose, or spent tokens on expensive chunk-and-synthesis for large diffs.
+
+First-run setup is a **constrained wizard**: it fires only when the tool genuinely cannot proceed (missing/unusable API config in an interactive shell), captures URL + key + model into `~/.config/commitshi/config`, and is invisible for the program's whole life afterwards. `commitshi --setup` re-opens it explicitly. The one-line promise is "stage, run `commitshi`, commit" — the wizard exists to get there, then gets out of the way.
 
 ## Core loop
 
@@ -19,22 +21,34 @@ Fast, cheap, no wizard, matches the repo's own voice. Built from dissatisfaction
 
 ## Non-features
 
-- No `git add`, no `--banner`, no wizard, no verbose mode.
+- No `git add`, no `--banner`, no verbose mode. Setup wizard exists only for the "can't proceed" case — it is not a banner, not a verbose tumbler, and it never appears once configured.
 - No chunk-and-synthesize for large diffs in v0 — compaction covers it; a chunking path is scaffolding.
 - No multi-provider adapter matrix — two seams (OpenAI-compatible arbitrary baseUrl + Anthropic), provider-agnostic channel.
 
 ## Config & precedence
 
-`flag > env > ~/.config/commitshi* file > repo git-config > global git-config`. Keys via standard provider env vars (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) first, plaintext file second, first-run tip last. Missing key → explanatory message and exit 1. Timeout/rate limit → fail loud, never retry-stale, never commit.
+`flag > env > ~/.config/commitshi/config (plaintext, TOML-compatible `key = value`) > repo git-config > global git-config`. Keys via standard provider env vars (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) first, plaintext file second, first-run tip last. Missing key → explanatory message and exit 1 (or the setup wizard when interactive). Timeout/rate limit → fail loud, never retry-stale, never commit.
+
+The setup wizard is the **only place** that writes config, and it writes exactly the keys resolution already reads (`baseurl`, `model`, `openai_api_key`). Default model: `gpt-5.6-luna` — cheap, fast, right-sized for a ~600-token commit subject; the OpenAI alias `gpt-5.6` is deliberately avoided (it routes to the flagship Sol tier at $5/$30).
 
 ## Flags
 
 - `commitshi` — full loop (generate → accept/`e`/`r` → commit)
+- `--setup` — force the setup wizard (works outside a git repo); writes config, exits. Also the "already configured" path: prefills existing values, overwrites on confirm.
 - `--no-commit` — print message only, no commit
 - `--regenerate` — fresh draft for the same diff
 - `--instructions "<text>"` — one-shot user instructions appended as a `### User instructions` prompt block; outranks template/default conventions (flag only, not persisted)
 - `--template` — one-shot template override
 - `--provider` / `--model` — one-shot overrides
+
+## Setup wizard triggers
+
+Runs only when **all** hold — otherwise the existing "missing key → explain and exit" path applies:
+1. Not a `--no-commit` piped run (stdin/stdout are a TTY).
+2. Flags don't already cover the bundle (`--base-url`/`--model` + env/api-key); a complete flag/env config skips the wizard.
+3. Not actually configured (missing key for a non-local URL, or `--setup` was given).
+
+In a normal run, the config-check runs **before** the staging guard, so a fresh user sees "set up first" instead of "nothing staged".
 
 ## Boundaries
 

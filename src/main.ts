@@ -1,9 +1,10 @@
-import { parseArgs, USAGE } from "./cli.ts";
+import { parseArgs, USAGE, type CliFlags } from "./cli.ts";
 import { guardStagedChanges, recentCommitSubjects, stagedDiff } from "./git.ts";
-import { makeResolveApiKey, makeResolveKey } from "./config.ts";
-import { generateDraft, type PipelineDeps } from "./pipeline.ts";
+import { isLocalBaseUrl, makeResolveApiKey, makeResolveKey, missingKeyMessage, type Deps } from "./config.ts";
+import { DEFAULT_BASE_URL, generateDraft, type PipelineDeps } from "./pipeline.ts";
 import { interactLoop, type AskKey, type DraftAttempt } from "./loop.ts";
 import { commitAcceptedMessage, type CommitResult } from "./commit.ts";
+import { runSetup } from "./setup.ts";
 
 export type MainDeps = Readonly<{
   /** Overrides for the model call seam (tests); production uses the real adapter. */
@@ -18,7 +19,43 @@ export type MainDeps = Readonly<{
   }>;
   /** Commit seam for tests; production runs `git commit -F -` in the cwd. */
   commit?: (message: string) => Promise<CommitResult>;
+  /** Config seams for tests; production resolves env + the default file path. */
+  config?: Deps;
+  /** Setup wizard seam for tests; production runs the real wizard. */
+  setup?: (out: Pick<typeof process.stdout, "write">, err: Pick<typeof process.stderr, "write">) => Promise<{ exitCode: number }>;
+  /** TTY seams for the setup trigger (tests); production reads process.isTTY. */
+  stdinIsTTY?: boolean;
+  stdoutIsTTY?: boolean;
 }>;
+
+/**
+ * True unless the flags + env alone make a usable bundle: a non-local URL
+ * plus a key-bearing env var, or an explicitly local URL (no key needed),
+ * with a model present. Used by the auto-trigger so a fully one-shot
+ * invocation never detours into the wizard.
+ */
+function flagsCoverBundle(env: NodeJS.ProcessEnv, flags: CliFlags): boolean {
+  if (flags.baseUrl === undefined) return false;
+  if (isLocalBaseUrl(flags.baseUrl)) return true;
+  return env.OPENAI_API_KEY !== undefined && env.OPENAI_API_KEY !== "";
+}
+
+/**
+ * True unless the resolved config is usable as-is: a key via env for a
+ * non-local endpoint, or a key in the config file for a non-local baseUrl,
+ * or a resolved baseUrl that is itself local. The pipeline's own
+ * OPENAI_BASE_URL fallback counts too. Mirrors the pipeline's key demand so
+ * the wizard never opens where a draft could have been produced.
+ */
+async function configBundleUsable(env: NodeJS.ProcessEnv, config: Deps): Promise<boolean> {
+  const resolveKey = makeResolveKey(config);
+  const baseUrlR = await resolveKey("baseUrl");
+  const baseUrl = baseUrlR?.value ?? env.OPENAI_BASE_URL ?? DEFAULT_BASE_URL;
+  if (isLocalBaseUrl(baseUrl)) return true;
+  if (env.OPENAI_API_KEY !== undefined && env.OPENAI_API_KEY !== "") return true;
+  const apiKeyR = await makeResolveApiKey(config)("openai");
+  return apiKeyR !== null && apiKeyR.value !== "";
+}
 
 /** Runs the CLI. Each stage returns the process exit code; main() applies it. */
 export async function main(
@@ -37,6 +74,58 @@ export async function main(
   if (flags.help) {
     stdout.write(USAGE);
     return 0;
+  }
+
+  const configDeps = deps.config ?? {};
+  const configEnv = configDeps.env ?? process.env;
+
+  // --setup: force the wizard standalone — no git repo, no staged guard.
+  if (flags.setup) {
+    if (deps.setup !== undefined) {
+      return (await deps.setup(stdout, stderr)).exitCode;
+    }
+    const result = await runSetup(
+      {
+        env: deps.config?.env,
+        configFilePath: deps.config?.configFilePath,
+        stdinIsTTY: deps.stdinIsTTY,
+        stdoutIsTTY: deps.stdoutIsTTY,
+      },
+      stdout,
+      stderr,
+    );
+    return result.exitCode;
+  }
+
+  // First-run auto-trigger (ticket 11): open the wizard BEFORE the staged
+  // guard when the resolved bundle is unusable, but only on a real terminal.
+  // A piped/CI run (the --no-commit contract) keeps the existing loud
+  // refusal here, or falls through to the pipeline's own refusal otherwise.
+  const stdinIsTTY = deps.stdinIsTTY ?? Boolean(process.stdin.isTTY);
+  const stdoutIsTTY = deps.stdoutIsTTY ?? Boolean(process.stdout.isTTY);
+  if (stdinIsTTY && stdoutIsTTY && !flags.noCommit) {
+    if (!flagsCoverBundle(configEnv, flags) && !(await configBundleUsable(configEnv, configDeps))) {
+      if (deps.setup !== undefined) {
+        const code = (await deps.setup(stdout, stderr)).exitCode;
+        if (code !== 0) stderr.write(`${missingKeyMessage("openai")}\n`);
+        return code;
+      }
+      const result = await runSetup(
+        {
+          env: deps.config?.env,
+          configFilePath: deps.config?.configFilePath,
+        },
+        stdout,
+        stderr,
+      );
+      if (result.exitCode !== 0) {
+        stderr.write(`${missingKeyMessage("openai")}\n`);
+        return 1;
+      }
+    }
+  } else if (!flags.noCommit && !flagsCoverBundle(configEnv, flags) && !(await configBundleUsable(configEnv, configDeps))) {
+    stderr.write(`${missingKeyMessage("openai")}\n`);
+    return 1;
   }
 
   let guard;
@@ -67,13 +156,14 @@ export async function main(
       // flags.style && recentCommitSubjects — without the flag the dep is
       // absent and the no-history guarantee is structural, not a promise.
       styleHistory: flags.style ? () => recentCommitSubjects() : undefined,
-      resolveKey: makeResolveKey(),
-      resolveApiKey: makeResolveApiKey(),
+      resolveKey: makeResolveKey(deps.config ?? {}),
+      resolveApiKey: makeResolveApiKey(deps.config ?? {}),
       chat: deps.chat,
       flags: {
         model: flags.model,
         template: flags.template,
         provider: flags.provider,
+        baseUrl: flags.baseUrl,
         instructions: flags.instructions,
       },
     });

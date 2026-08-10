@@ -1,8 +1,11 @@
 export type CliFlags = Readonly<{
   help: boolean;
+  setup: boolean;
   noCommit: boolean;
   regenerate: boolean;
   style: boolean;
+  /** One-shot endpoint override (kebab flag --base-url -> camel key). */
+  baseUrl?: string;
   instructions?: string;
   template?: string;
   provider?: string;
@@ -19,7 +22,9 @@ USAGE:
     commitshi [flags]
 
 FLAGS:
+    --setup                 Run the setup wizard: write baseurl/model/openai_api_key to ~/.config/commitshi/config, then exit
     --no-commit             Print the commit draft and stop; never commit
+    --base-url <url>        One-shot endpoint override (default https://api.openai.com/v1)
     --regenerate            Generate a fresh commit draft for the same staged diff
     --instructions "<text>" One-shot instructions for the model (outranks the template)
     --style                 Add the last ~8 commit subjects to the prompt (opt-in; history is never read otherwise)
@@ -32,6 +37,7 @@ Runs inside a git repository and reads only the staged changes.
 `;
 
 const VALUE_FLAGS: Readonly<Record<string, keyof CliFlags>> = {
+  "--base-url": "baseUrl",
   "--instructions": "instructions",
   "--template": "template",
   "--provider": "provider",
@@ -42,14 +48,16 @@ const BOOLEAN_FLAGS: Readonly<Record<string, keyof CliFlags>> = {
   "--no-commit": "noCommit",
   "--regenerate": "regenerate",
   "--style": "style",
+  "--setup": "setup",
   "--help": "help",
   "-h": "help",
 };
 
 export function parseArgs(args: readonly string[]): ParseResult {
-  const flags: Record<keyof Pick<CliFlags, "help" | "noCommit" | "regenerate" | "style">, boolean> &
-    Partial<Record<"instructions" | "template" | "provider" | "model", string>> = {
+  const flags: Record<keyof Pick<CliFlags, "help" | "setup" | "noCommit" | "regenerate" | "style">, boolean> &
+    Partial<Record<"baseUrl" | "instructions" | "template" | "provider" | "model", string>> = {
     help: false,
+    setup: false,
     noCommit: false,
     regenerate: false,
     style: false,
@@ -64,7 +72,7 @@ export function parseArgs(args: readonly string[]): ParseResult {
       if (value === undefined || value.startsWith("-")) {
         return { ok: false, error: `flag ${arg} requires a value` };
       }
-      flags[valueName as "instructions"] = value;
+      flags[valueName as "baseUrl"] = value;
       i++;
       continue;
     }

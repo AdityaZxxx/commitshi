@@ -6,7 +6,7 @@ describe("parseArgs", () => {
     const result = parseArgs([]);
     expect(result).toEqual({
       ok: true,
-      flags: { help: false, noCommit: false, regenerate: false, style: false },
+      flags: { help: false, setup: false, noCommit: false, regenerate: false, style: false },
     });
   });
 
@@ -16,6 +16,13 @@ describe("parseArgs", () => {
     expect(result.ok && result.flags.regenerate).toBe(true);
     expect(result.ok && result.flags.style).toBe(true);
     expect(result.ok && result.flags.help).toBe(false);
+  });
+
+  test("--setup parses as a boolean flag, off by default", () => {
+    const on = parseArgs(["--setup"]);
+    expect(on.ok && on.flags.setup).toBe(true);
+    const off = parseArgs(["--no-commit"]);
+    expect(off.ok && off.flags.setup).toBe(false);
   });
 
   test("--style off by default", () => {
@@ -79,6 +86,20 @@ describe("parseArgs", () => {
     expect(result.ok).toBe(false);
   });
 
+  test("--base-url captures its value into the camel-case key", () => {
+    const result = parseArgs(["--base-url", "http://localhost:11434/v1"]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.flags.baseUrl).toBe("http://localhost:11434/v1");
+  });
+
+  test("--base-url missing its value is an error", () => {
+    const result = parseArgs(["--base-url"]);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("--base-url");
+  });
+
   test("usage text lists every documented flag for --help", () => {
     for (const flag of [
       "--no-commit",
@@ -88,6 +109,8 @@ describe("parseArgs", () => {
       "--template",
       "--provider",
       "--model",
+      "--setup",
+      "--base-url",
       "--help",
     ]) {
       expect(USAGE).toContain(flag);
