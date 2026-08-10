@@ -8,13 +8,21 @@ import { describe, expect, test } from "bun:test";
 import { readdirSync } from "node:fs";
 import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { runSetup } from "./setup.ts";
 import { main } from "./main.ts";
 import { DEFAULT_MODEL } from "./pipeline.ts";
 import { readConfigFile } from "./config.ts";
+
+const execFileAsync = promisify(execFile);
+/** Run a command in `cwd`; ignore stdout/stderr (test scaffolding). */
+async function exec(cmd: string, args: readonly string[], cwd: string): Promise<void> {
+  await execFileAsync(cmd, args, { cwd });
+}
 
 function capture(): {
   stream: Pick<typeof process.stdout, "write">;
@@ -306,41 +314,55 @@ describe("auto-trigger (ticket 11): the wizard fires pre-staging on a TTY, never
   });
 
   test("auto-trigger skips when --base-url + --model + OPENAI_API_KEY cover the bundle", async () => {
+    // The full flow has to reach the pipeline, which means it has to clear
+    // the staged guard. Sandbox into a fresh git repo with one staged file
+    // so the run is reproducible regardless of the test runner's cwd.
+    const previousCwd = process.cwd();
     const { configPath } = await sandbox();
-    const out = capture();
-    const err = capture();
-    let opened = 0;
-    let chatCalls = 0;
-    const code = await main(
-      ["--no-commit", "--base-url", "https://api.example.com/v1", "--model", "some-model"],
-      out.stream,
-      err.stream,
-      {
-        chat: async () => {
-          chatCalls++;
-          return { ok: true as const, content: "type: feat\nscope: -\nsummary: add a.txt\nbody: -" };
+    const workdir = realpathSync(await mkdtemp(join(tmpdir(), "commitshi-trigger-")));
+    await exec("git", ["init", "-q"], workdir);
+    await writeFile(join(workdir, "a.txt"), "one\n");
+    await exec("git", ["add", "a.txt"], workdir);
+    process.chdir(workdir);
+    try {
+      const out = capture();
+      const err = capture();
+      let opened = 0;
+      let chatCalls = 0;
+      const code = await main(
+        ["--no-commit", "--base-url", "https://api.example.com/v1", "--model", "some-model"],
+        out.stream,
+        err.stream,
+        {
+          chat: async () => {
+            chatCalls++;
+            return { ok: true as const, content: "type: feat\nscope: -\nsummary: add a.txt\nbody: -" };
+          },
+          config: {
+            configFilePath: configPath,
+            env: { OPENAI_API_KEY: "sk-flag-run" },
+            gitConfigGet: async () => null,
+          },
+          stdinIsTTY: true,
+          stdoutIsTTY: true,
+          setup: async () => {
+            opened++;
+            return { exitCode: 0 };
+          },
         },
-        config: {
-          configFilePath: configPath,
-          env: { OPENAI_API_KEY: "sk-flag-run" },
-          gitConfigGet: async () => null,
-        },
-        stdinIsTTY: true,
-        stdoutIsTTY: true,
-        setup: async () => {
-          opened++;
-          return { exitCode: 0 };
-        },
-      },
-    );
-    // Wizard skipped proves the trigger honored the covering flags/env;
-    // the run then reaches the normal stages (guard → pipeline → --no-commit
-    // prints the finished draft and exits 0). A non-zero code here would mean
-    // either the trigger fired or the run short-circuited unexpectedly.
-    expect(opened).toBe(0);
-    expect(chatCalls).toBe(1);
-    expect(code).toBe(0);
-    expect(err.text()).not.toContain("commitshi setup");
+      );
+      // Wizard skipped proves the trigger honored the covering flags/env;
+      // the run then reaches the normal stages (guard → pipeline → --no-commit
+      // prints the finished draft and exits 0). A non-zero code here would
+      // mean either the trigger fired or the run short-circuited unexpectedly.
+      expect(opened).toBe(0);
+      expect(chatCalls).toBe(1);
+      expect(code).toBe(0);
+      expect(err.text()).not.toContain("commitshi setup");
+    } finally {
+      process.chdir(previousCwd);
+      await rm(workdir, { recursive: true, force: true });
+    }
   });
 
   test("auto-trigger never fires when stdin is piped, even with an unusable bundle", async () => {
