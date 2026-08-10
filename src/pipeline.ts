@@ -88,7 +88,7 @@ export async function generateDraft(deps: PipelineDeps): Promise<DraftResult> {
     return {
       ok: false,
       exitCode: 2,
-      message: `commitshi: provider "${providerR.value}" is not supported yet — v0 understands "openai" (any OpenAI-compatible baseUrl: OpenAI, Groq, DeepSeek, Ollama); Anthropic lands in the next ticket`,
+      message: `commitshi: provider "${providerR.value}" is not supported — commitshi currently understands only the OpenAI-compatible adapter (OpenAI, Groq, DeepSeek, Ollama at any baseUrl).`,
     };
   }
 

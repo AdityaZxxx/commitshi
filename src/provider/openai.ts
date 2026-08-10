@@ -114,7 +114,7 @@ export async function chatCompletions(
       ok: false,
       kind: what,
       status,
-      message: `commitshi: provider returned ${label}${detail ? `: ${detail}` : ""} — nothing was committed`,
+      message: `commitshi: provider returned ${label}${detail ? `: ${detail}` : ""}`,
     };
   }
 

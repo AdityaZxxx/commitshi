@@ -69,12 +69,13 @@ describe("interactLoop", () => {
     expect(stdout.text()).toContain("feat(a): do the thing");
   });
 
-  test("a truncated draft is disclosed above the prompt", async () => {
+  test("a truncated draft is disclosed above the prompt, on stdout with the frame", async () => {
     const first: DraftAttempt = { ok: true, draft: "feat(a): big", truncated: true };
-    const { deps, stderr } = makeDeps([""]);
+    const { deps, stdout, stderr } = makeDeps([""]);
     const result = await interactLoop(first, deps);
     expect(result.ok).toBe(true);
-    expect(stderr.text()).toContain("truncated digest");
+    expect(stdout.text()).toContain("truncated digest");
+    expect(stderr.text()).toBe("");
   });
 
   test("e opens $EDITOR and the edited message becomes the new draft", async () => {
@@ -156,10 +157,11 @@ describe("interactLoop", () => {
     expect(result).toEqual({ ok: true, action: "accepted", draft: "feat(a): after edit", regenerations: 1 });
   });
 
-  test("an unrecognized key reprints the prompt hint, Enter still accepts", async () => {
+  test("an unrecognized key gets a quiet named re-prompt, Enter still accepts", async () => {
     const { deps, stdout } = makeDeps(["x", ""]);
     const result = await interactLoop(good, deps);
     expect(result).toEqual({ ok: true, action: "accepted", draft: "feat(a): do the thing", regenerations: 0 });
+    expect(stdout.text()).toContain("unknown key");
     expect(stdout.text()).toContain("press Enter to accept");
   });
 

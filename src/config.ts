@@ -209,7 +209,7 @@ export function missingKeyMessage(provider: Provider): string {
     `  export ${envName}=...            # environment variable`,
     `  ${provider.toLowerCase()}_api_key=... in ~/.config/commitshi/config   # plaintext file`,
     "",
-    "Get a key from your provider, then re-run commitshi.",
+    "Set one in the environment or the config file, then re-run commitshi.",
     "Tip: run `commitshi --setup` in a terminal for the interactive setup wizard (defaults to model gpt-5.6-luna).",
   ].join("\n");
 }

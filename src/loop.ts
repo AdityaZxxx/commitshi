@@ -46,7 +46,7 @@ export type LoopResult =
   | Readonly<{ ok: true; action: "cancel"; draft: string; regenerations: number }>
   | Readonly<{ ok: false; exitCode: number; message: string }>;
 
-const PROMPT = "commitshi: [Enter] accept · [e]dit · [r]egenerate · [q]uit — ";
+const PROMPT = "  [Enter] accept · [e] edit · [r] regenerate · [q] quit › ";
 
 type FileIo = { file: (path: string) => { text: () => Promise<string> } };
 
@@ -176,8 +176,10 @@ export async function interactLoop(first: DraftAttempt, deps: LoopDeps): Promise
       return { ok: false, exitCode: 1, message: attempt.message };
     }
     const draft = attempt.draft;
+    // The truncation note goes to stdout with the draft frame (not stderr) so
+    // the two can't scramble when hooks pipe the streams to different fds.
     if (attempt.truncated) {
-      deps.stderr.write(
+      deps.stdout.write(
         "commitshi: note — the staged diff exceeded the digest budget; the model saw a truncated digest\n",
       );
     }
@@ -213,6 +215,8 @@ export async function interactLoop(first: DraftAttempt, deps: LoopDeps): Promise
       close();
       return { ok: true, action: "cancel", draft, regenerations };
     }
-    deps.stdout.write("commitshi: press Enter to accept, e to edit, r to regenerate, q to quit\n");
+    // Unknown key: name it once, then a quiet re-prompt — the prompt above the
+    // frame is the loud line; this one just nudges the user back to it.
+    deps.stdout.write("commitshi: unknown key — press Enter to accept, e to edit, r to regenerate, q to quit\n");
   }
 }

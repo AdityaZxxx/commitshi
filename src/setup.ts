@@ -156,7 +156,9 @@ export async function runSetup(
   };
 
   stdout.write(`commitshi setup — writing API config to ${path}\n`);
-  stdout.write("Press Enter to accept the default shown in brackets; existing values prefill.\n\n");
+  stdout.write(
+    "Press Enter to accept the default shown in brackets; existing values prefill. Press Ctrl-C to abort.\n\n",
+  );
 
   // 1. Base URL — must be a parseable http(s) URL; refuse + re-prompt otherwise.
   let baseUrl: string;
@@ -194,7 +196,7 @@ export async function runSetup(
       const answer = await askField(stdout, nextLine, "API key", currentKey);
       if (answer === null) return abort();
       if (answer === "") {
-        stdout.write(`  A non-local endpoint (${baseUrl}) needs an API key or it can never answer — enter a key, or Ctrl-C to abandon\n`);
+        stdout.write(`  A non-local endpoint (${baseUrl}) needs an API key — enter one, or press Ctrl-C to abort\n`);
         continue;
       }
       apiKey = answer;
