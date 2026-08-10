@@ -1,7 +1,7 @@
 import { parseArgs, USAGE, type CliFlags } from "./cli.ts";
 import { guardStagedChanges, recentCommitSubjects, stagedDiff } from "./git.ts";
 import { isLocalBaseUrl, makeResolveApiKey, makeResolveKey, missingKeyMessage, type Deps } from "./config.ts";
-import { DEFAULT_BASE_URL, generateDraft, type PipelineDeps } from "./pipeline.ts";
+import { DEFAULT_BASE_URL, generateDraft, setRegenerateTemperatureOverride, type PipelineDeps } from "./pipeline.ts";
 import { interactLoop, type AskKey, type DraftAttempt } from "./loop.ts";
 import { commitAcceptedMessage, type CommitResult } from "./commit.ts";
 import { runSetup } from "./setup.ts";
@@ -200,7 +200,14 @@ export async function main(
     ask: loopDeps?.ask,
     // Regenerate re-runs the SAME pipeline against the SAME unchanged staged
     // diff: stagedDiff() is read fresh, but the staged set is untouched.
-    regenerate: async () => attemptFrom(await generate()),
+    regenerate: async () => {
+      setRegenerateTemperatureOverride(0.3);
+      try {
+        return attemptFrom(await generate());
+      } finally {
+        setRegenerateTemperatureOverride(null);
+      }
+    },
   });
 
   if (!outcome.ok) {

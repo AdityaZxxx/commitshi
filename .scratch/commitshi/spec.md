@@ -36,10 +36,12 @@ The setup wizard is the **only place** that writes config, and it writes exactly
 - `commitshi` — full loop (generate → accept/`e`/`r` → commit)
 - `--setup` — force the setup wizard (works outside a git repo); writes config, exits. Also the "already configured" path: prefills existing values, overwrites on confirm.
 - `--no-commit` — print message only, no commit
-- `--regenerate` — fresh draft for the same diff
+- `--regenerate` — produce a fresh variant of the commit draft for the same diff (temperature is bumped only on regenerate, so the first draft is the model's best guess and `r` explores alternatives)
 - `--instructions "<text>"` — one-shot user instructions appended as a `### User instructions` prompt block; outranks template/default conventions (flag only, not persisted)
 - `--template` — one-shot template override
 - `--provider` / `--model` — one-shot overrides
+
+The initial commit draft and the regenerate variant use different sampling temperatures: the initial draft is sent at temperature 0 so it is the model's deterministic best guess for the diff, and `r` is sent at temperature 0.3 so each regeneration explores an alternative wording. The override is reset on every entry to the draft pipeline, so it never leaks from a regenerate into a later initial call — the temperature split is a property of the call site, not a persistent setting.
 
 ## Setup wizard triggers
 

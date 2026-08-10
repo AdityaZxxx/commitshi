@@ -308,6 +308,28 @@ describe("main", () => {
       expect(committed).toBe("feat(): draft 2");
     });
 
+    // Ticket r: the wire request carries temperature 0 on the initial draft
+    // and temperature 0.3 on the regeneration — driven through main so the
+    // override is set ONLY by the regenerate call site at main.ts:203.
+    test("initial draft sends temperature 0; r sends temperature 0.3 (wire-level)", async () => {
+      await stageA();
+      const temperatures: number[] = [];
+      const chat: import("./pipeline.ts").PipelineDeps["chat"] = async (_d, req) => {
+        if (typeof req.temperature === "number") temperatures.push(req.temperature);
+        return { ok: true as const, content: "type: feat\nscope: -\nsummary: x\nbody: -" };
+      };
+      const out = capture();
+      const err = capture();
+      const code = await main([], out.stream, err.stream, {
+        chat,
+        loop: interactive(["r", "r", ""]),
+        commit: async () => ({ ok: true as const }),
+      });
+      expect(code).toBe(0);
+      // initial draft → 0, then two regenerations → 0.3 each.
+      expect(temperatures).toEqual([0, 0.3, 0.3]);
+    });
+
     test("q cancels — no commit, exit 0", async () => {
       await stageA();
       const out = capture();

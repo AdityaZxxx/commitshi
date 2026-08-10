@@ -8,7 +8,8 @@
 
 - [x] Draft shown → Enter accepts → proceeds to next stage
 - [x] `e` opens `$EDITOR`; the edited message is the new draft
-- [x] `r` produces a fresh draft for the same (unchanged) staged diff
+- [x] `r` produces a variant of the commit draft for the same (unchanged) staged diff — subject wording differs from the prior draft
+- [ ] verified live on NIM that the initial draft is deterministic (temperature: 0) and `r` produces a varied draft (temperature: 0.3)
 - [x] `--no-commit` prints final message and exits without further interaction
 
 ## Implementation notes
@@ -24,3 +25,14 @@
 **Verified live (pty + real Ollama, model `gemma4:31b-cloud`):** Enter accepted `feat(auth): add login function`; `r` regenerated and accepted a fresh draft; `q` canceled with no commit; `e` through a real (fake-script) `$EDITOR` accepted the edited `fix(auth): corrected by $EDITOR`; `e` with `$EDITOR` unset failed loud.
 
 **Suite:** `bun test` → 97 pass / 0 fail (was 77); `bun run typecheck` → clean.
+
+## Resolution
+
+**Amendment (ticket r):** the regenerate path now bumps sampling temperature on the wire request, so `r` produces a variant instead of an identical re-fetch.
+
+- Initial draft temperature: 0 (unchanged — the model's deterministic best guess).
+- Regenerate temperature: 0.3 (a small, targeted nudge toward varied wording).
+- Implementation: a module-scoped `regenerateTemperatureOverride` in `src/pipeline.ts`, captured-then-reset at the very top of `generateDraft()` so it can never leak from a regenerate call into a subsequent initial call. The override is set ONLY by the regenerate call site at `src/main.ts:203` (via the exported `setRegenerateTemperatureOverride(0.3)` setter, in a try/finally that clears it after the call).
+- Spec update: `.scratch/commitshi/spec.md` line 39 area now reads `--regenerate` as "produce a fresh variant of the commit draft for the same diff (temperature is bumped only on regenerate, so the first draft is the model's best guess and `r` explores alternatives)", with a follow-up paragraph documenting the temperature split and the reset-on-entry safety belt.
+- Tests: 5 new tests cover the wire request — initial = 0, regenerate = 0.3, no leak across calls, reset-on-entry even when the caller forgets to clear, and an end-to-end drive through `main.ts` over a real staged repo with two `r` presses that captures `[0, 0.3, 0.3]`. Suite: 166 pass / 0 fail (was 161); `bun run typecheck` clean.
+- Live NIM verification: not exercised in this session (interactive `script -q` not feasible headless); left for the user.

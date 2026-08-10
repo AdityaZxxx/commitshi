@@ -65,6 +65,13 @@ export const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 // NOT the `gpt-5.6` alias, which routes to the flagship Sol tier ($5/$30).
 export const DEFAULT_MODEL = "gpt-5.6-luna";
 
+let regenerateTemperatureOverride: number | null = null;
+
+/** Sets the temperature used by the next generateDraft() call. Reset on every generateDraft() entry. */
+export function setRegenerateTemperatureOverride(value: number | null): void {
+  regenerateTemperatureOverride = value;
+}
+
 /** Builds the system prompt: role + strict contract, tuned to the template's tokens. */
 function buildSystemPrompt(templateParse: Extract<TemplateParse, { ok: true }>): string {
   const conventional = templateParse.kind === "conventional";
@@ -84,6 +91,8 @@ function buildSystemPrompt(templateParse: Extract<TemplateParse, { ok: true }>):
  * message and the exit code to use; success returns the finished commit draft.
  */
 export async function generateDraft(deps: PipelineDeps): Promise<DraftResult> {
+  const temperatureOverride = regenerateTemperatureOverride;
+  regenerateTemperatureOverride = null;
   const diff = await deps.stagedDiff();
   const compacted = compact(diff);
 
@@ -189,7 +198,11 @@ export async function generateDraft(deps: PipelineDeps): Promise<DraftResult> {
   const chat = deps.chat ?? chatCompletions;
   const result = await chat(
     { baseUrl, apiKey },
-    { model, messages: [{ role: "system", content: system }, { role: "user", content: user }], temperature: 0 },
+    {
+      model,
+      messages: [{ role: "system", content: system }, { role: "user", content: user }],
+      ...(temperatureOverride !== null ? { temperature: temperatureOverride } : { temperature: 0 }),
+    },
   );
 
   if (!result.ok) {

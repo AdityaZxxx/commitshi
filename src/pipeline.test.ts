@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { generateDraft, type PipelineDeps } from "./pipeline.ts";
+import { generateDraft, setRegenerateTemperatureOverride, type PipelineDeps } from "./pipeline.ts";
 
 // Ticket 09 + 10: one-shot --instructions / --template / --style flags.
 // The chat seam captures the exact prompt sent to the model so every test
@@ -232,5 +232,54 @@ describe("generateDraft — --style (ticket 10)", () => {
     expect(captured.user).toContain("### Style history");
     expect(captured.user).toContain("### User instructions");
     expect(captured.user!.indexOf("### Compact diff")).toBeLessThan(captured.user!.indexOf("### Style history"));
+  });
+});
+
+describe("generateDraft — regenerate temperature (ticket r)", () => {
+  // The chat stub captures the CompletionRequest so the wire-level temperature
+  // is the assertion target — matches the existing prompt-content pattern.
+  const captureTemperature = (): { chat: PipelineDeps["chat"]; temperatures: number[] } => {
+    const temperatures: number[] = [];
+    const chat: PipelineDeps["chat"] = async (_d, req) => {
+      if (typeof req.temperature === "number") temperatures.push(req.temperature);
+      return { ok: true as const, content: OK_REPLY };
+    };
+    return { chat, temperatures };
+  };
+
+  test("initial call sends temperature: 0", async () => {
+    const { chat, temperatures } = captureTemperature();
+    await generateDraft({ ...baseDeps(), chat });
+    expect(temperatures).toEqual([0]);
+  });
+
+  test("regenerate call (override active) sends temperature: 0.3", async () => {
+    const { chat, temperatures } = captureTemperature();
+    setRegenerateTemperatureOverride(0.3);
+    try {
+      await generateDraft({ ...baseDeps(), chat });
+    } finally {
+      setRegenerateTemperatureOverride(null);
+    }
+    expect(temperatures).toEqual([0.3]);
+  });
+
+  test("a second initial call after a regenerate sends temperature: 0 — the override does not leak", async () => {
+    const { chat, temperatures } = captureTemperature();
+    setRegenerateTemperatureOverride(0.3);
+    await generateDraft({ ...baseDeps(), chat });
+    setRegenerateTemperatureOverride(null);
+    await generateDraft({ ...baseDeps(), chat });
+    expect(temperatures).toEqual([0.3, 0]);
+  });
+
+  test("reset-on-entry: an override that survives its caller does not leak beyond the call it armed", async () => {
+    const { chat, temperatures } = captureTemperature();
+    setRegenerateTemperatureOverride(0.3); // simulate a regenerate site that forgets to clear
+    await generateDraft({ ...baseDeps(), chat }); // entry consumes the override, then clears
+    // No explicit clear — but the next entry must find null, not 0.3.
+    await generateDraft({ ...baseDeps(), chat });
+    setRegenerateTemperatureOverride(null);
+    expect(temperatures).toEqual([0.3, 0]);
   });
 });
