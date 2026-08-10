@@ -14,7 +14,7 @@
 // bundle is unusable) — run this one body, so behavior can't drift.
 
 import { dirname } from "node:path";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import {
   defaultConfigFilePath,
   formatConfigFile,
@@ -137,8 +137,7 @@ export async function runSetup(
   const env = opts.env ?? process.env;
   const path = opts.configFilePath ?? defaultConfigFilePath(env);
   const existing = await readConfigFile(path);
-  const existingText = await Bun.file(path)
-    .text()
+  const existingText = await readFile(path, "utf8")
     .catch(() => ""); // absent file is a fresh write, not an error
 
   const currentUrl = existing.get("baseurl") ?? DEFAULT_BASE_URL;
@@ -251,7 +250,7 @@ export async function runSetup(
   try {
     await mkdir(dirname(path), { recursive: true });
     // The single write: this is the only place in shipped code a config file lands.
-    await Bun.write(path, text);
+    await writeFile(path, text, "utf8");
   } catch (error) {
     reader.close();
     stderr.write(`commitshi: could not write ${path}: ${(error as Error).message} — config not written\n`);

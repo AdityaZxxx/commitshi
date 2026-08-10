@@ -9,6 +9,7 @@
 
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { readFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
@@ -69,7 +70,7 @@ export async function readConfigFile(path: string): Promise<Map<string, string>>
   const map = new Map<string, string>();
   let text: string;
   try {
-    text = await Bun.file(path).text();
+    text = await readFile(path, "utf8");
   } catch {
     return map; // absent or unreadable file is a soft "no value here"
   }

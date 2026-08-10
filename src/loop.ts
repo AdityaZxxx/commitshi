@@ -14,7 +14,8 @@
 
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { unlink, writeFile } from "node:fs/promises";
+import { readFile, unlink, writeFile } from "node:fs/promises";
+import { spawn as nodeSpawn } from "node:child_process";
 import { presentDraft, regenerating, resolveColors, shouldEmitColor } from "./presentation.ts";
 import type { NumstatEntry } from "./compaction.ts";
 
@@ -53,6 +54,8 @@ export type LoopResult =
 const PROMPT = "  [Enter] accept · [e] edit · [r] regenerate · [q] quit › ";
 
 type FileIo = { file: (path: string) => { text: () => Promise<string> } };
+
+const nodeFileIo: FileIo = { file: (path) => ({ text: () => readFile(path, "utf8") }) };
 
 /**
  * Production key source: raw-mode single keypresses on the TTY. Returns ""
@@ -101,9 +104,14 @@ function makeKeyAsker(stdin: NodeJS.ReadStream): { ask: AskKey; close: () => voi
 /** Real IO behind the editor spawn seam, used in production. */
 const runEditor: NonNullable<LoopDeps["spawn"]> = async (editor, path) => {
   // The editor inherits stdio so it takes over the terminal; the user edits
-  // in place. We resolve with the editor's exit code.
-  const proc = Bun.spawn([editor, path], { stdio: ["inherit", "inherit", "inherit"] });
-  return proc.exited;
+  // in place. We resolve with the editor's exit code. Node's `spawn` fires
+  // `exit` once the process ends; with stdio inherited there are no streams
+  // left to drain, so `exit` is the right event here (not `close`).
+  return await new Promise<number>((resolve, reject) => {
+    const proc = nodeSpawn(editor, [path], { stdio: "inherit" });
+    proc.once("error", reject);
+    proc.once("exit", (code) => resolve(code ?? 1));
+  });
 };
 
 /** Opens the draft in $EDITOR and returns the edited text, or a loud failure. */
@@ -163,7 +171,7 @@ export async function interactLoop(first: DraftAttempt, deps: LoopDeps): Promise
     };
   }
 
-  const fileIo: FileIo = Bun;
+  const fileIo: FileIo = nodeFileIo;
   let attempt = first;
   let regenerations = 0;
   let edited = false; // set after a successful $EDITOR round; shows the (edited) badge
