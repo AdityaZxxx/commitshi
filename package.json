@@ -3,13 +3,29 @@
   "version": "0.1.0",
   "description": "Generate a commit message from the staged diff with an LLM, then accept, edit, or regenerate before committing",
   "license": "MIT",
+  "author": "Aditya Rahmad",
+  "keywords": [
+    "github",
+    "git",
+    "commit",
+    "cli",
+    "ai"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AdityaZxxx/commitshi.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "bin": {
     "commitshi": "bin/commitshi.ts"
   },
   "files": [
     "bin",
-    "src"
+    "src",
+    "!**/*.test.ts"
   ],
   "scripts": {
     "test": "bun test",
