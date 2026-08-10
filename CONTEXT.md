@@ -13,7 +13,7 @@ The client-side, lossy compressed view of the staged changes — per-file `numst
 _Avoid_: "full diff", "unordered diff", "chunked diff"
 
 **Template**:
-The user-authored shape of the commit message, configured as `commitshi.template` in git config. A string of tokens — `{type}`, `{scope}`, `{summary}`, `{body}` — the model fills exactly one value per token.
+The user-authored shape of the commit message, configured as `commitshi.template` in git config. A string of tokens — `{type}`, `{scope}`, `{summary}`, `{body}` — the model fills exactly one value per token. The default is `{type}{scope}: {summary}\n\n{body}`: the scope value carries its own parens (empty scope ⇒ no parens), and the blank line between subject and body is literal template text and survives render.
 _Avoid_: "rule", "format string", "schema"
 
 **Staged changes**:

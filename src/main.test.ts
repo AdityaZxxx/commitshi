@@ -178,7 +178,7 @@ describe("main", () => {
       const err = capture();
       const code = await main(["--no-commit"], out.stream, err.stream, { chat: stubChat });
       expect(code).toBe(0);
-      expect(out.text()).toContain("feat(): add a.txt");
+      expect(out.text()).toContain("feat: add a.txt");
       expect(err.text()).not.toContain("nothing staged");
       expect(err.text()).not.toContain("not a git repository");
 
@@ -244,7 +244,7 @@ describe("main", () => {
         },
       });
       expect(code).toBe(0);
-      expect(committed).toBe("feat(): add a.txt");
+      expect(committed).toBe("feat: add a.txt");
       expect(out.text()).toContain("committed");
       expect(err.text()).not.toContain("canceled");
     });
@@ -305,7 +305,7 @@ describe("main", () => {
       });
       expect(code).toBe(0);
       expect(calls).toBe(2); // first draft + one regeneration
-      expect(committed).toBe("feat(): draft 2");
+      expect(committed).toBe("feat: draft 2");
     });
 
     // Ticket r: the wire request carries temperature 0 on the initial draft
@@ -358,7 +358,7 @@ describe("main", () => {
       });
       expect(code).toBe(1);
       expect(err.text()).toContain("interactive terminal");
-      expect(out.text()).not.toContain("feat(): add a.txt");
+      expect(out.text()).not.toContain("feat: add a.txt");
     });
 
     // Ticket 09: --instructions reaches the prompt end to end, with the
@@ -378,7 +378,7 @@ describe("main", () => {
       expect(code).toBe(0);
       expect(seenUser).toContain("### User instructions");
       expect(seenUser).toContain("treat this as a chore");
-      expect(out.text()).toContain("chore(): tidy the a.txt file");
+      expect(out.text()).toContain("chore: tidy the a.txt file");
     });
 
     // Ticket 09: --template beats any committed template for one run. The
@@ -396,7 +396,7 @@ describe("main", () => {
       );
       expect(code).toBe(0);
       expect(out.text()).toContain("just the summary line");
-      expect(out.text()).not.toContain("feat():");
+      expect(out.text()).not.toContain("feat:");
     });
 
     // Ticket 10: without --style no history is read even when commits exist.
@@ -457,7 +457,7 @@ describe("main", () => {
       const code = await main(["--no-commit", "--style"], out.stream, err.stream, { chat });
       expect(code).toBe(0);
       expect(seenUser).not.toContain("### Style history");
-      expect(out.text()).toContain("feat(): add a.txt");
+      expect(out.text()).toContain("feat: add a.txt");
     });
   });
 });

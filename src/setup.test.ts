@@ -310,7 +310,7 @@ describe("auto-trigger (ticket 11): the wizard fires pre-staging on a TTY, never
     expect(opened).toBe(1);
     // Pre-staging: a fresh user sees setup, never "nothing staged".
     expect(err.text()).not.toContain("nothing staged");
-    expect(out.text()).not.toContain("feat():");
+    expect(out.text()).not.toContain("feat: add");
   });
 
   test("auto-trigger skips when --base-url + --model + OPENAI_API_KEY cover the bundle", async () => {

@@ -18,8 +18,12 @@ export type TokenName = "type" | "scope" | "summary" | "body";
 export type TemplateKind = "conventional" | "custom";
 
 export const KNOWN_TOKENS: readonly TokenName[] = ["type", "scope", "summary", "body"];
-/** The default Conventional Commits template used when `commitshi.template` is empty. */
-export const DEFAULT_CONVENTIONAL_TEMPLATE = "{type}({scope}): {summary}\n{body}";
+/**
+ * The default Conventional Commits template used when `commitshi.template` is empty.
+ * {scope} carries its own parens ("(cli)" or nothing), and the blank line before
+ * {body} is literal — it survives render, per the git subject/body rule.
+ */
+export const DEFAULT_CONVENTIONAL_TEMPLATE = "{type}{scope}: {summary}\n\n{body}";
 
 export type TemplateParse =
   | Readonly<{ ok: true; kind: TemplateKind; tokens: readonly TokenName[] }>
@@ -149,9 +153,9 @@ export function parseFillContract(
     if (/\{[a-z]+\}/.test(value)) {
       return { ok: false, error: `token {${token}}: value still contains a template token (${RegExp["$&"]}); emit values only, never the { } names` };
     }
-    // scope is the optional half of Conventional Commits: "no value" renders
-    // as the empty parens. Any other token may be empty only when its whole
-    // template line is droppable.
+    // scope is the optional half of Conventional Commits: "no value" means no
+    // scope at all (and no parens). Any other token may be empty only when its
+    // whole template line is droppable.
     if (value === "" && !omissible.has(token) && token !== "scope") {
       return { ok: false, error: `token {${token}} was given no value, but its position in the template requires one` };
     }
@@ -181,19 +185,42 @@ function validateValues(values: FillValues): Readonly<{ ok: true } | { ok: false
   return { ok: true };
 }
 
-/** Fills the template with validated values; empty omissible tokens leave no residue. */
+/**
+ * Fills the template with validated values. Empty omissible tokens leave no
+ * residue: a template line that held only that token (plus whitespace) drops
+ * out entirely. Lines that are empty in the *template* — a literal blank line
+ * like the one between subject and body — are structure and survive.
+ */
 function render(template: string, values: FillValues): string {
-  let out = "";
-  for (const seg of segmentTemplate(template)) {
-    out += seg.kind === "literal" ? seg.text : (values[seg.name] ?? "");
-  }
-  // A line that held only an empty token collapses away (that token's whole
-  // line was its residue).
-  return out
-    .split("\n")
-    .filter((line) => line.trim() !== "")
+  // Fill one template line at a time so the line-level drop below can see
+  // exactly which template line produced each output line, no matter how many
+  // lines a multi-line value (body) expands into.
+  const filledLines = template.split("\n").map((tplLine) => {
+    let line = "";
+    for (const seg of segmentTemplate(tplLine)) {
+      line += seg.kind === "literal" ? seg.text : (values[seg.name] ?? "");
+    }
+    return { tplLine, line };
+  });
+  return filledLines
+    .map(({ tplLine, line }) => {
+      if (line.trim() === "" && tplLine.trim() !== "" && hasOnlyWhitespaceAndEmptyTokens(tplLine, values)) return null;
+      return line;
+    })
+    .filter((line): line is string => line !== null)
     .join("\n")
     .trim();
+}
+
+/** True when a template line, once filled, is empty solely because every token on it came back empty and the rest was whitespace. */
+function hasOnlyWhitespaceAndEmptyTokens(templateLine: string, values: FillValues): boolean {
+  const pieces = templateLine.split(/\{[a-z]+\}/);
+  if (pieces.some((lit) => lit.trim() !== "")) return false;
+  for (const m of templateLine.matchAll(/\{([a-z]+)\}/g)) {
+    const v = values[m[1] as TokenName];
+    if (v !== undefined && v !== "") return false;
+  }
+  return true;
 }
 
 export type StrictFillResult =
@@ -204,7 +231,9 @@ export type StrictFillResult =
  * Turns a model reply into the finished commit message under the strict
  * token-fill contract, or rejects it with a precise reason. The message is
  * assembled from the template and the parsed values — nothing the model said
- * outside a token value can reach the commit.
+ * outside a token value can reach the commit. When {scope} is not already
+ * bounded by literal parens in the template (as in the default), the value
+ * gains them ("cli" → "(cli)"), so an empty scope leaves no parens behind.
  */
 export function strictFill(template: string, modelOutput: string): StrictFillResult {
   const parsed = parseTemplate(template);
@@ -228,7 +257,24 @@ export function strictFill(template: string, modelOutput: string): StrictFillRes
   const valid = validateValues(filled.values);
   if (!valid.ok) return valid;
 
-  return { ok: true, message: render(template, filled.values) };
+  const values: FillValues =
+    parsed.tokens.includes("scope") && !scopeHasLiteralParens(template)
+      ? { ...filled.values, scope: withParens(filled.values.scope) }
+      : filled.values;
+
+  return { ok: true, message: render(template, values) };
+}
+
+/** True when the template already puts a literal "(" before and ")" after {scope} (the legacy shape) — the value is shown bare inside them. */
+function scopeHasLiteralParens(template: string): boolean {
+  const i = template.indexOf("{scope}");
+  return i > 0 && template[i - 1] === "(" && template[i + "{scope}".length] === ")";
+}
+
+/** Wraps a non-empty scope in parens ("cli" → "(cli)"); an empty scope stays empty. */
+function withParens(scope: string | undefined): string {
+  if (scope === undefined || scope === "") return "";
+  return `(${scope})`;
 }
 
 // --- prompt assembly --------------------------------------------------------

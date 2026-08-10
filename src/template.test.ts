@@ -7,7 +7,7 @@ import {
   strictFill,
 } from "./template.ts";
 
-const TPL = DEFAULT_CONVENTIONAL_TEMPLATE; // "{type}({scope}): {summary}\n{body}"
+const TPL = DEFAULT_CONVENTIONAL_TEMPLATE; // "{type}{scope}: {summary}\n\n{body}"
 
 describe("parseTemplate", () => {
   test("accepts the conventional shape; type-first ⇒ conventional", () => {
@@ -54,7 +54,7 @@ describe("segmentTemplate", () => {
 });
 
 describe("strictFill — happy path (fill contract)", () => {
-  test("all tokens filled, body multi-line", () => {
+  test("all tokens filled, subject and body separated by a blank line", () => {
     const out = [
       "type: feat",
       "scope: auth",
@@ -65,24 +65,24 @@ describe("strictFill — happy path (fill contract)", () => {
     const r = strictFill(TPL, out);
     expect(r).toEqual({
       ok: true,
-      message: "feat(auth): add a login flow\nReplaces the cookie stub with session-backed auth.\nSecond body line stays.",
+      message: "feat(auth): add a login flow\n\nReplaces the cookie stub with session-backed auth.\nSecond body line stays.",
     });
   });
 
-  test("scope sentinel '-' renders empty between the parens", () => {
+  test("scope sentinel '-' renders no scope and no parens", () => {
     const out = "type: chore\nscope: -\nsummary: bump deps\nbody: -";
     const r = strictFill(TPL, out);
-    expect(r).toEqual({ ok: true, message: "chore(): bump deps" });
+    expect(r).toEqual({ ok: true, message: "chore: bump deps" });
   });
 
   test("empty value also means 'no value'", () => {
     const out = "type: docs\nscope:\nsummary: document the release step\nbody:";
-    expect(strictFill(TPL, out)).toEqual({ ok: true, message: "docs(): document the release step" });
+    expect(strictFill(TPL, out)).toEqual({ ok: true, message: "docs: document the release step" });
   });
 
   test("a token alone on its line drops cleanly when empty", () => {
-    const tpl = "{type}: {summary}\n{body}";
-    const out = "type: feat\nsummary: add --no-commit\nbody: -";
+    const tpl = "{type}{scope}: {summary}\n\n{body}";
+    const out = "type: feat\nscope: -\nsummary: add --no-commit\nbody: -";
     expect(strictFill(tpl, out)).toEqual({ ok: true, message: "feat: add --no-commit" });
   });
 
@@ -93,6 +93,21 @@ describe("strictFill — happy path (fill contract)", () => {
   test("prefix literal is preserved", () => {
     const r = strictFill("COMMIT {type}: {summary}", "type: feat\nsummary: add thing");
     expect(r).toEqual({ ok: true, message: "COMMIT feat: add thing" });
+  });
+
+  test("the scope value gains its parens wherever {scope} sits in the template", () => {
+    const r = strictFill("{type}: {summary} {scope}", "type: feat\nscope: cli\nsummary: add flags");
+    expect(r).toEqual({ ok: true, message: "feat: add flags (cli)" });
+  });
+
+  test("a custom template's literal blank line survives render", () => {
+    const r = strictFill("{summary}\n\n{body}", "summary: tighten the loop\nbody: Because reasons.");
+    expect(r).toEqual({ ok: true, message: "tighten the loop\n\nBecause reasons." });
+  });
+
+  test("a legacy custom template with literal parens renders them once (idempotent)", () => {
+    const r = strictFill("{type}({scope}): {summary}", "type: feat\nscope: auth\nsummary: add login helper");
+    expect(r).toEqual({ ok: true, message: "feat(auth): add login helper" });
   });
 });
 

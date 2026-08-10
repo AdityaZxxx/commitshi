@@ -239,7 +239,7 @@ describe("commit stage (ticket 08, sandboxed repos with real hooks)", () => {
       const code = await main(["--no-commit"], out.stream, err.stream, { chat: stubChat });
 
       expect(code).toBe(0);
-      expect(out.text()).toContain("feat(): add a.txt");
+      expect(out.text()).toContain("feat: add a.txt");
       expect(await gitLog(workdir, "--oneline")).toBe(""); // HEAD: still unborn
       expect(await git(workdir, "status", "--porcelain")).toMatch(/^A {2}a\.txt/m); // still staged as before
       expect(await Bun.file(join(workdir, "hook-count")).exists()).toBe(false); // poised hook never fired
@@ -260,7 +260,7 @@ describe("commit stage (ticket 08, sandboxed repos with real hooks)", () => {
       expect(code).toBe(0);
       expect(out.text()).toContain("commitshi: committed");
       const body = await gitLog(workdir, "-1", "--format=%B");
-      expect(body).toContain("feat(): add a.txt");
+      expect(body).toContain("feat: add a.txt");
       expect(body).toContain("Hook-Checked: yes"); // hooks fired on the real commit path
       expect(await git(workdir, "show", "--format=", "--name-only", "HEAD")).toContain("a.txt");
       expect(err.text()).toBe("");
