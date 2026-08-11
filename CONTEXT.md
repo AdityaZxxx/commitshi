@@ -8,6 +8,10 @@ A CLI tool that converts the staged changes in a git repo into a concise commit 
 The model-generated commit message, proposed for the user to accept, edit, or discard. It becomes the actual message only after the user confirms.
 _Avoid_: "output", "suggestion", "final message"
 
+**Inline edit**:
+Editing the current commit draft with `i` — the whole draft appears as one pre-filled line, readline-style, and the user edits it in one go and presses Enter. Distinct from `$EDITOR` (`e`), which is the heavy escape hatch for rewriting the whole message. (Multi-line inline edit was considered and dropped after research showed the ecosystem doesn't ship it — see `.scratch/product-research/inline-edit-ux.md`.)
+_Avoid_: "form edit", "field edit", "quick edit"
+
 **Compacted diff**:
 The client-side, lossy compressed view of the staged changes — per-file `numstat` plus hunks with unchanged context and trailing lines collapsed — that is what is actually sent to the model. Keeps token cost bounded on large changes without losing change semantics.
 _Avoid_: "full diff", "unordered diff", "chunked diff"

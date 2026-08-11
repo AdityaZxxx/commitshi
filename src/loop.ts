@@ -19,7 +19,7 @@ import { spawn as nodeSpawn } from "node:child_process";
 import { presentDraft, regenerating, resolveColors, shouldEmitColor } from "./presentation.ts";
 import type { NumstatEntry } from "./compaction.ts";
 
-/** One keypress from the user: "" for Enter, a letter otherwise; null on EOF. */
+/** One raw keypress chunk from the user: the bytes as typed, unnormalized; null on EOF. */
 export type AskKey = () => Promise<string | null>;
 
 export type LoopDeps = Readonly<{
@@ -51,16 +51,18 @@ export type LoopResult =
   | Readonly<{ ok: true; action: "cancel"; draft: string; regenerations: number }>
   | Readonly<{ ok: false; exitCode: number; message: string }>;
 
-const PROMPT = "  [Enter] accept · [e] edit · [r] regenerate · [q] quit › ";
+const PROMPT = "  [Enter] accept · [i] edit · [e] $EDITOR · [r] regenerate · [q] quit › ";
 
 type FileIo = { file: (path: string) => { text: () => Promise<string> } };
 
 const nodeFileIo: FileIo = { file: (path) => ({ text: () => readFile(path, "utf8") }) };
 
 /**
- * Production key source: raw-mode single keypresses on the TTY. Returns ""
- * for Enter, a lowercased letter for the rest, null on EOF. Ctrl-C restores
- * the terminal and re-raises SIGINT so the exit is a plain interrupt.
+ * Production key source: raw-mode keypress chunks on the TTY, delivered
+ * verbatim — no trimming, no case folding. Consumers interpret: the decision
+ * prompt normalizes to a key; inline edit walks the bytes (arrows, Ctrl-…).
+ * null on EOF. Ctrl-C arrives as "\x03"; what it means (interrupt vs cancel)
+ * is the consumer's call.
  */
 function makeKeyAsker(stdin: NodeJS.ReadStream): { ask: AskKey; close: () => void } {
   const raw = stdin as NodeJS.ReadStream & { setRawMode?: (mode: boolean) => void };
@@ -80,14 +82,7 @@ function makeKeyAsker(stdin: NodeJS.ReadStream): { ask: AskKey; close: () => voi
       };
       const onData = (chunk: Buffer) => {
         cleanup();
-        const key = chunk.toString("utf8");
-        if (key === "") {
-          restore();
-          process.kill(process.pid, "SIGINT");
-          return;
-        }
-        if (key === "\r" || key === "\n") return resolve("");
-        return resolve(key.trim().toLowerCase());
+        resolve(chunk.toString("utf8"));
       };
       const onEnd = () => {
         cleanup();
@@ -150,6 +145,95 @@ async function editDraft(
   }
 }
 
+/** The outcome of an inline edit of the current draft. */
+type InlineEditResult =
+  | Readonly<{ ok: true; text: string }>
+  | Readonly<{ ok: false; kind: "cancelled" }>
+  | Readonly<{ ok: false; kind: "empty-subject"; message: string }>;
+
+// One readline keystroke bound to its action. Insert keeps the character.
+const CTRL_W = "\x17", CTRL_U = "\x15", BACKSPACE = "\x7f", ESC = "\x1b", CTRL_C = "\x03";
+
+/**
+ * Edits the draft in one pre-filled line, in the style of `@clack/prompts`'
+ * `text({ initialValue })`: the whole draft is the initial value, the user
+ * edits it as one line, and a single Enter commits and returns. There is no
+ * double-Enter, no per-line walk — the opencommit pattern. If the draft has a
+ * body the newline is shown as `\n` inside the line; most drafts are one line.
+ */
+async function inlineEdit(draft: string, ask: AskKey, stdout: Pick<NodeJS.WriteStream, "write">): Promise<InlineEditResult> {
+  stdout.write("commitshi: editing in place — Enter saves; Esc or Ctrl-C cancels\n");
+
+  // The whole draft flattened to one line; a body shows its \n visibly.
+  let text = draft.replace(/\n/g, "\\n");
+  let aborted = false;
+  let committed = false;
+  // Echo-driven in-place edit: printable characters echo as typed, Backspace
+  // erases the character just written, and only wholesale rewrites (Ctrl-U,
+  // Ctrl-W) redraw. There is no `\r` mid-typing — the cursor's position IS
+  // the state, so a redraw only happens when the screen no longer matches it.
+  const rewrite = () => {
+    stdout.write(`\r\x1b[K> ${text}`);
+  };
+  const erase = (n: number) => {
+    for (let i = 0; i < n; i++) stdout.write("\b \b");
+  };
+  stdout.write(`> ${text}`);
+  while (!aborted && !committed) {
+    const key = await ask();
+    if (key === null || key === ESC || key === CTRL_C) {
+      aborted = true;
+      break;
+    }
+    if (key === "\r" || key === "\n") {
+      committed = true;
+      stdout.write("\n");
+      break;
+    }
+    if (key === BACKSPACE || key === "\b") {
+      if (text.length > 0) {
+        text = text.slice(0, -1);
+        erase(1);
+      }
+      continue;
+    }
+    if (key === CTRL_U) {
+      text = "";
+      rewrite();
+      continue;
+    }
+    if (key === CTRL_W) {
+      const kept = text.replace(/\s*\S+\s*$/, "");
+      const removed = text.length - kept.length;
+      text = kept;
+      erase(removed);
+      continue;
+    }
+    text += key;
+    stdout.write(key);
+  }
+
+  if (aborted) {
+    stdout.write("\r\x1b[Kcommitshi: inline edit cancelled — draft unchanged\n");
+    return { ok: false, kind: "cancelled" };
+  }
+
+  // The user's text is sovereign except for one rule: the subject must be
+  // non-empty. A body was flattened to `\\n` on screen; turn it back into a
+  // real newline before saving. The one check: the first line is the subject.
+  const restored = text.replace(/\\n/g, "\n");
+  const subject = restored.split("\n")[0] ?? "";
+  if (subject.trim() === "") {
+    return {
+      ok: false,
+      kind: "empty-subject",
+      message: "commitshi: inline edit left the subject empty — nothing accepted, no commit; draft reverted",
+    };
+  }
+  stdout.write("\r\x1b[Kcommitshi: inline edit saved\n");
+  return { ok: true, text: restored };
+}
+
 /**
  * Runs the inline loop around the first generated draft. Enter (empty key)
  * always accepts the CURRENT draft, edits included; `r` swaps in a fresh
@@ -174,7 +258,7 @@ export async function interactLoop(first: DraftAttempt, deps: LoopDeps): Promise
   const fileIo: FileIo = nodeFileIo;
   let attempt = first;
   let regenerations = 0;
-  let edited = false; // set after a successful $EDITOR round; shows the (edited) badge
+  let edited = false; // set after a successful edit ($EDITOR or inline); shows the (edited) badge
 
   // The color gate resolves once: TTY + !NO_COLOR + !CI. The render seam is
   // presentDraft; the prompt string stays exactly the 12-pinned constant.
@@ -210,12 +294,20 @@ export async function interactLoop(first: DraftAttempt, deps: LoopDeps): Promise
       prompt: PROMPT,
       colors,
     });
-    const answer = await ask();
+    const rawAnswer = await ask();
 
-    if (answer === null) {
+    if (rawAnswer === null) {
       close();
       return { ok: false, exitCode: 1, message: "commitshi: input closed — nothing accepted, no commit" };
     }
+    // The seam delivers raw bytes; the decision prompt reads keys. Ctrl-C at
+    // the decision prompt is a real interrupt (restore the terminal, re-raise).
+    if (rawAnswer === "\x03") {
+      close();
+      process.kill(process.pid, "SIGINT");
+      return { ok: false, exitCode: 130, message: "commitshi: interrupted — nothing accepted, no commit" };
+    }
+    const answer = rawAnswer === "\r" || rawAnswer === "\n" ? "" : rawAnswer.trim().toLowerCase();
 
     if (answer === "") {
       close();
@@ -226,6 +318,19 @@ export async function interactLoop(first: DraftAttempt, deps: LoopDeps): Promise
       if (!editResult.ok) {
         close();
         return { ok: false, exitCode: 1, message: editResult.message };
+      }
+      attempt = { ok: true, draft: editResult.text, truncated: false, numstat: attempt.numstat };
+      edited = true;
+      continue;
+    }
+    if (answer === "i") {
+      const editResult = await inlineEdit(draft, ask, deps.stdout);
+      if (!editResult.ok) {
+        if (editResult.kind === "empty-subject") {
+          close();
+          return { ok: false, exitCode: 1, message: editResult.message };
+        }
+        continue; // cancelled: revert, no badge, re-present the decision
       }
       attempt = { ok: true, draft: editResult.text, truncated: false, numstat: attempt.numstat };
       edited = true;
@@ -244,6 +349,6 @@ export async function interactLoop(first: DraftAttempt, deps: LoopDeps): Promise
     }
     // Unknown key: name it once, then a quiet re-prompt — the prompt above the
     // frame is the loud line; this one just nudges the user back to it.
-    deps.stdout.write("commitshi: unknown key — press Enter to accept, e to edit, r to regenerate, q to quit\n");
+    deps.stdout.write("commitshi: unknown key — press Enter to accept, i to edit inline, e for $EDITOR, r to regenerate, q to quit\n");
   }
 }
