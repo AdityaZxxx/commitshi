@@ -46,7 +46,7 @@ describe("main", () => {
     const err = capture();
     const code = await main(["--help"], out.stream, err.stream);
     expect(code).toBe(0);
-    for (const flag of ["--no-commit", "--regenerate", "--instructions", "--template", "--provider", "--model", "--setup", "--base-url"]) {
+    for (const flag of ["--no-commit", "--instructions", "--template", "--provider", "--model", "--setup", "--base-url"]) {
       expect(out.text()).toContain(flag);
     }
     expect(err.text()).toBe("");

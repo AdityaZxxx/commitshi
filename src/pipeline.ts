@@ -123,8 +123,8 @@ export async function generateDraft(deps: PipelineDeps): Promise<DraftResult> {
   const templateRaw = bundle.template?.value?.trim() ?? "";
 
   const isLocal = isLocalBaseUrl(baseUrl);
-  // Key demand, resolved here once — the check main.ts used to mirror before
-  // the staged guard.
+  // Key demand is resolved here once, after the bundle — main does not
+  // pre-check, so a missing key surfaces as "no draft" instead of "no diff".
   const envKey = pipeEnv.OPENAI_API_KEY;
   const hasKey =
     (apiKeyR !== null && apiKeyR.value !== "") || (envKey !== undefined && envKey !== "");

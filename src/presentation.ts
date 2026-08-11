@@ -44,8 +44,8 @@ export function shouldEmitColor(
   env: NodeJS.ProcessEnv,
   isTTY: boolean,
 ): boolean {
-  // _stdout is passed for API symmetry/call-site clarity; the TTY decision is
-  // taken by the loop (which already owns the stdoutIsTTY seam) and passed in.
+  // _stdout is kept in the signature so the loop's color seam matches its
+  // shouldEmitColor call site; the TTY check is the caller's job.
   void _stdout;
   if (!isTTY) return false;
   if (env.NO_COLOR !== undefined) return false;
@@ -136,13 +136,15 @@ export function presentDraft(stdout: Pick<NodeJS.WriteStream, "write">, opts: Pr
   const { colors } = opts;
   const out: string[] = [];
 
-  // ── staged changes ── badge sits inside the label so it appears once per run.
+  // (truncated) appears once per run — the badge is part of the label, not a
+  // second line — so a re-presentation after a regeneration doesn't re-print it.
   out.push(
     `\n${rule("staged changes", colors, opts.truncated ? { text: "(truncated)", paint: warn } : undefined)}`,
   );
   out.push(...renderNumstat(opts.numstat));
 
-  // ── draft N ── (edited) badge keeps the same number; edits aren't regens.
+  // (edited) badge keeps the same draft number — edits don't increment it;
+  // only `r` does.
   out.push(
     `\n${rule(`draft ${opts.draftNumber}`, colors, opts.edited ? { text: "(edited)", paint: accent } : undefined)}`,
   );

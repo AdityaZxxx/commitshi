@@ -2,7 +2,6 @@ export type CliFlags = Readonly<{
   help: boolean;
   setup: boolean;
   noCommit: boolean;
-  regenerate: boolean;
   style: boolean;
   /** One-shot endpoint override (kebab flag --base-url -> camel key). */
   baseUrl?: string;
@@ -28,7 +27,6 @@ FLAGS:
 ${flagLine("--setup", "Run the setup wizard and exit")}
 ${flagLine("--no-commit", "Print the draft and exit without committing")}
 ${flagLine("--base-url <url>", "Override the API endpoint for this run")}
-${flagLine("--regenerate", "Regenerate the draft for the staged diff")}
 ${flagLine("--instructions \"<text>\"", "Steer the model for this run; outranks the template")}
 ${flagLine("--style", "Add the last ~8 commit subjects to the prompt (opt-in; history is never read otherwise)")}
 ${flagLine("--template \"<string>\"", "Override the commit template for this run")}
@@ -49,7 +47,6 @@ const VALUE_FLAGS: Readonly<Record<string, keyof CliFlags>> = {
 
 const BOOLEAN_FLAGS: Readonly<Record<string, keyof CliFlags>> = {
   "--no-commit": "noCommit",
-  "--regenerate": "regenerate",
   "--style": "style",
   "--setup": "setup",
   "--help": "help",
@@ -57,12 +54,11 @@ const BOOLEAN_FLAGS: Readonly<Record<string, keyof CliFlags>> = {
 };
 
 export function parseArgs(args: readonly string[]): ParseResult {
-  const flags: Record<keyof Pick<CliFlags, "help" | "setup" | "noCommit" | "regenerate" | "style">, boolean> &
+  const flags: Record<keyof Pick<CliFlags, "help" | "setup" | "noCommit" | "style">, boolean> &
     Partial<Record<"baseUrl" | "instructions" | "template" | "provider" | "model", string>> = {
     help: false,
     setup: false,
     noCommit: false,
-    regenerate: false,
     style: false,
   };
 

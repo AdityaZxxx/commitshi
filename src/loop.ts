@@ -59,10 +59,8 @@ const nodeFileIo: FileIo = { file: (path) => ({ text: () => readFile(path, "utf8
 
 /**
  * Production key source: raw-mode keypress chunks on the TTY, delivered
- * verbatim — no trimming, no case folding. Consumers interpret: the decision
- * prompt normalizes to a key; inline edit walks the bytes (arrows, Ctrl-…).
- * null on EOF. Ctrl-C arrives as "\x03"; what it means (interrupt vs cancel)
- * is the consumer's call.
+ * verbatim. null on EOF. Ctrl-C arrives as "\x03"; what it means (interrupt
+ * vs cancel) is the consumer's call.
  */
 function makeKeyAsker(stdin: NodeJS.ReadStream): { ask: AskKey; close: () => void } {
   const raw = stdin as NodeJS.ReadStream & { setRawMode?: (mode: boolean) => void };
@@ -151,7 +149,8 @@ type InlineEditResult =
   | Readonly<{ ok: false; kind: "cancelled" }>
   | Readonly<{ ok: false; kind: "empty-subject"; message: string }>;
 
-// One readline keystroke bound to its action. Insert keeps the character.
+// Readline control chars (DEL, BS, ESC, etc.) named once so the inline-edit
+// branches read as a control-character → action map, not a string table.
 const CTRL_W = "\x17", CTRL_U = "\x15", BACKSPACE = "\x7f", ESC = "\x1b", CTRL_C = "\x03";
 
 /**

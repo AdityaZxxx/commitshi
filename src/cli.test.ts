@@ -6,14 +6,13 @@ describe("parseArgs", () => {
     const result = parseArgs([]);
     expect(result).toEqual({
       ok: true,
-      flags: { help: false, setup: false, noCommit: false, regenerate: false, style: false },
+      flags: { help: false, setup: false, noCommit: false, style: false },
     });
   });
 
   test("boolean flags parse", () => {
-    const result = parseArgs(["--no-commit", "--regenerate", "--style"]);
+    const result = parseArgs(["--no-commit", "--style"]);
     expect(result.ok && result.flags.noCommit).toBe(true);
-    expect(result.ok && result.flags.regenerate).toBe(true);
     expect(result.ok && result.flags.style).toBe(true);
     expect(result.ok && result.flags.help).toBe(false);
   });
@@ -103,7 +102,6 @@ describe("parseArgs", () => {
   test("usage text lists every documented flag for --help", () => {
     for (const flag of [
       "--no-commit",
-      "--regenerate",
       "--style",
       "--instructions",
       "--template",

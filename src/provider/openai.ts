@@ -26,7 +26,7 @@ export type ChatDeps = Readonly<{
   baseUrl: string; // provider root, e.g. https://api.openai.com/v1 or http://localhost:11434/v1
   apiKey?: string; // absent → no Authorization header (local endpoints)
   fetchFn?: typeof fetch; // seam for tests
-  timeoutMs?: number; // hard abort; default 30s
+  timeoutMs?: number; // hard abort; see DEFAULT_TIMEOUT_MS for the value and why
 }>;
 
 // Local OpenAI-compatible servers (Ollama) can take tens of seconds on a
