@@ -8,11 +8,10 @@ import { chatCompletions, type ChatDeps, type CompletionResult } from "./provide
 import type { Provider } from "./config.ts";
 import { isLocalBaseUrl, missingKeyMessage, type ConfigBundle } from "./config.ts";
 import {
-  buildFillInstructions,
+  buildPrompt,
+  checkTemplate,
   DEFAULT_CONVENTIONAL_TEMPLATE,
-  parseTemplate,
   strictFill,
-  type TemplateParse,
 } from "./template.ts";
 
 // Re-exported so the setup wizard and pipeline share one source of truth:
@@ -59,7 +58,6 @@ export type DraftResult =
       message: string;
       truncated: boolean;
       numstat: readonly NumstatEntry[]; // per-file stats for the presentation frame
-      templateKind: string;
       baseUrl: string;
       model: string;
     }>
@@ -87,21 +85,6 @@ let regenerateTemperatureOverride: number | null = null;
 export function setRegenerateTemperatureOverride(value: number | null): void {
   regenerateTemperatureOverride = value;
 }
-
-/** Builds the system prompt: role + strict contract, tuned to the template's tokens. */
-function buildSystemPrompt(templateParse: Extract<TemplateParse, { ok: true }>): string {
-  const conventional = templateParse.kind === "conventional";
-  return [
-    "You write a git commit message for staged changes, shaped to a template.",
-    conventional
-      ? "Follow the Conventional Commits style: a concise subject, an optional scope in parentheses, and an optional body when the change needs context."
-      : "Follow the template's shape exactly; it is the required output format.",
-    "Base the message only on the compacted diff and the file names in it; do not invent files or changes.",
-    "",
-    buildFillInstructions(templateParse.tokens),
-  ].join("\n");
-}
-
 /**
  * Runs the full tracer-bullet pipeline. A failure at any stage returns a loud
  * message and the exit code to use; success returns the finished commit draft.
@@ -154,10 +137,15 @@ export async function generateDraft(deps: PipelineDeps): Promise<DraftResult> {
   const apiKey = isLocal ? undefined : apiKeyR?.value;
 
   const template = templateRaw === "" ? DEFAULT_CONVENTIONAL_TEMPLATE : templateRaw;
-  const parsed = parseTemplate(template);
-  if (!parsed.ok) {
-    return { ok: false, exitCode: 2, message: `commitshi: template is invalid — ${parsed.error}` };
+  // Fail fast on a malformed template before a single token is spent — the
+  // model call is the expensive failure to make loud.
+  const templateError = checkTemplate(template);
+  if (templateError !== null) {
+    return { ok: false, exitCode: 2, message: `commitshi: template is invalid — ${templateError}` };
   }
+  // buildPrompt and strictFill share one parse inside the template module;
+  // buildPrompt turns the tokens into prose, strictFill re-parses and enforces.
+  const system = buildPrompt(template);
 
   // Optional one-shot prompt blocks (tickets 09, 10). Each is appended only
   // when the corresponding flag was passed; with neither flag the prompt is
@@ -199,7 +187,6 @@ export async function generateDraft(deps: PipelineDeps): Promise<DraftResult> {
     );
   }
 
-  const system = buildSystemPrompt(parsed);
   const user = [
     "### Compact diff",
     "",
@@ -244,7 +231,6 @@ export async function generateDraft(deps: PipelineDeps): Promise<DraftResult> {
     message: filled.message,
     truncated: compacted.truncated,
     numstat: compacted.numstat,
-    templateKind: parsed.kind,
     baseUrl,
     model,
   };

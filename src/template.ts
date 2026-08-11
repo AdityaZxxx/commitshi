@@ -297,3 +297,34 @@ export function buildFillInstructions(tokens: readonly TokenName[]): string {
     "No other text, no markdown fences, no preamble.",
   ].join("\n");
 }
+
+/**
+ * The system prompt the model sees, built from the template alone. Owns the
+ * fill contract AND the prose rules it explains, so the two can never drift
+ * apart — this is the text whose contract `strictFill` enforces on the reply.
+ * Callers pass the template string, not a pre-parsed shape: parse is an
+ * internal here. A malformed template yields a generic contract prompt; the
+ * strictFill step would have already rejected it with the precise reason.
+ */
+export function buildPrompt(template: string): string {
+  const parsed = parseTemplate(template);
+  const conventional = parsed.ok && parsed.kind === "conventional";
+  const tokens: readonly TokenName[] = parsed.ok ? parsed.tokens : KNOWN_TOKENS;
+  return [
+    "You write a git commit message for staged changes, shaped to a template.",
+    conventional
+      ? "Follow the Conventional Commits style: a concise subject, an optional scope in parentheses, and an optional body when the change needs context."
+      : "Follow the template's shape exactly; it is the required output format.",
+    "Base the message only on the compacted diff and the file names in it; do not invent files or changes.",
+    "",
+    buildFillInstructions(tokens),
+  ].join("\n");
+}
+
+/** Preflight for callers that must fail before a model call: the parse error
+ *  when the template is malformed, null when it parses. strictFill remains
+ *  the authoritative gate on what the model sends back. */
+export function checkTemplate(template: string): string | null {
+  const parsed = parseTemplate(template);
+  return parsed.ok ? null : parsed.error;
+}

@@ -243,6 +243,44 @@ describe("generateDraft — --style (ticket 10)", () => {
   });
 });
 
+describe("generateDraft — template seam (ticket 15/16 hardening)", () => {
+  test("a malformed template fails before the model call, exit 2, zero chat traffic", async () => {
+    let chatCalls = 0;
+    const result = await generateDraft({
+      ...baseDeps(),
+      flags: { template: "{nope}: {summary}" },
+      chat: async () => {
+        chatCalls++;
+        return { ok: true as const, content: OK_REPLY };
+      },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.exitCode).toBe(2);
+      expect(result.message).toContain("template is invalid");
+      expect(result.message).toContain("nope");
+    }
+    expect(chatCalls).toBe(0);
+  });
+
+  test("the system prompt carries the fill contract, worded by the template's tokens", async () => {
+    const captured: { system?: string } = {};
+    await generateDraft({
+      ...baseDeps(),
+      chat: async (_d, req) => {
+        captured.system = req.messages[0]?.content ?? "";
+        return { ok: true as const, content: OK_REPLY };
+      },
+    });
+    // The prose rules (the contract on the way out) now live in template.ts
+    // next to strictFill (the contract on the way in) — pinning the two
+    // sides of the same promise in one capture.
+    expect(captured.system).toContain("Reply with exactly these lines");
+    expect(captured.system).toContain("type: <one word, one of:");
+    expect(captured.system).toContain("summary: <one short imperative line");
+  });
+});
+
 describe("generateDraft — regenerate temperature (ticket r)", () => {
   // The chat stub captures the CompletionRequest so the wire-level temperature
   // is the assertion target — matches the existing prompt-content pattern.

@@ -372,6 +372,26 @@ describe("main", () => {
       expect(out.text()).not.toContain("feat:");
     });
 
+    // Candidate-3 hardening: a malformed template fails loud at the pipeline's
+    // front door with no model call spent and the reason named for the user.
+    test("--template with an unknown token fails fast, exit 2, no model call", async () => {
+      await stageA();
+      const out = capture();
+      const err = capture();
+      let chatCalls = 0;
+      const code = await main(["--no-commit", "--template", "{wat}: {summary}"], out.stream, err.stream, {
+        chat: async () => {
+          chatCalls++;
+          return { ok: true as const, content: "summary: x" };
+        },
+      });
+      expect(code).toBe(2);
+      expect(chatCalls).toBe(0);
+      expect(err.text()).toContain("template is invalid");
+      expect(err.text()).toContain("wat");
+      expect(out.text().trim()).toBe("");
+    });
+
     // Ticket 10: without --style no history is read even when commits exist.
     // The prompt must not contain the style block.
     test("no --style: prompt never carries history even with commits present", async () => {
