@@ -6,7 +6,7 @@
 import { compact, renderCompacted, type NumstatEntry } from "./compaction.ts";
 import { chatCompletions, type ChatDeps, type CompletionResult } from "./provider/openai.ts";
 import type { Provider } from "./config.ts";
-import { isLocalBaseUrl } from "./config.ts";
+import { isLocalBaseUrl, missingKeyMessage, type ConfigBundle } from "./config.ts";
 import {
   buildFillInstructions,
   DEFAULT_CONVENTIONAL_TEMPLATE,
@@ -29,13 +29,18 @@ export type PipelineDeps = Readonly<{
    * one that promises not to.
    */
   styleHistory?: () => Promise<readonly string[]>;
-  /** Resolves a config key: the `makeResolveKey` signature (key, {flags}). */
-  resolveKey: (
-    key: string,
-    opts?: { flags?: Partial<Record<string, string | undefined>> },
-  ) => Promise<Readonly<{ value: string; source: string }> | null>;
+  /** The one config seam: resolves the draft-facing bundle
+   * (provider/baseUrl/model/template over the injected flags) in a single
+   * pass. Production wires config.ts's `resolveBundle`; tests stub it. */
+  resolveBundle: (
+    flags?: Partial<Record<string, string | undefined>>,
+  ) => Promise<ConfigBundle>;
   /** Resolves the API key for a named provider. */
   resolveApiKey: (provider: Provider) => Promise<Readonly<{ value: string; source: string }> | null>;
+  /** Environment seam for the pipeline's own legacy-env fallbacks
+   * (OPENAI_BASE_URL / OPENAI_API_KEY); tests inject a hermetic env so a
+   * developer's exported vars can't leak into the key-demand check. */
+  env?: NodeJS.ProcessEnv;
   chat?: (deps: ChatDeps, req: Parameters<typeof chatCompletions>[1]) => Promise<CompletionResult>;
   /** One-shot CLI overrides, applied at the top of the precedence chain. None are ever persisted. */
   flags?: Readonly<{
@@ -58,7 +63,18 @@ export type DraftResult =
       baseUrl: string;
       model: string;
     }>
-  | Readonly<{ ok: false; exitCode: number; message: string }>;
+  | Readonly<{
+      ok: false;
+      exitCode: number;
+      message: string;
+      /**
+       * "missing-key": the resolved bundle cannot make a call (non-local
+       * baseUrl, no key anywhere). The discriminant main.ts maps to the
+       * setup wizard — key demand lives HERE, at the draft's front door,
+       * not mirrored ahead of the staged guard in main.
+       */
+      kind?: "missing-key";
+    }>;
 
 export const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 // Cheap, fast, right-sized for a ~600-token commit subject. Deliberately
@@ -96,12 +112,16 @@ export async function generateDraft(deps: PipelineDeps): Promise<DraftResult> {
   const diff = await deps.stagedDiff();
   const compacted = compact(diff);
 
-  // Provider selection: this ticket ships the OpenAI-compatible adapter.
-  // Asking for another provider gets a loud, honest refusal, not a silent
+  // Provider selection: the OpenAI-compatible adapter ships today; asking
+  // for another provider gets a loud, honest refusal, not a silent
   // fallthrough to the wrong wire format.
   const flags = deps.flags ?? {};
-  const providerR = await deps.resolveKey("provider", { flags: { provider: flags.provider } });
-  if (providerR !== null && providerR.value !== "" && providerR.value.toLowerCase() !== "openai") {
+  // One bundle read: provider/baseUrl/model/template in a single config-file
+  // pass. resolveKey (per key) stays the granular seam for other callers.
+  const bundle = await deps.resolveBundle(flags as Partial<Record<string, string | undefined>>);
+
+  const providerR = bundle.provider;
+  if (providerR !== undefined && providerR.value !== "" && providerR.value.toLowerCase() !== "openai") {
     return {
       ok: false,
       exitCode: 2,
@@ -110,35 +130,29 @@ export async function generateDraft(deps: PipelineDeps): Promise<DraftResult> {
   }
 
   // The API key may legitimately be absent for a local OpenAI-compatible
-  // endpoint; only a non-local baseUrl demands one.
-  const baseUrlR = await deps.resolveKey("baseUrl", { flags: { baseUrl: flags.baseUrl } });
-  const modelR = await deps.resolveKey("model", { flags: { model: flags.model } });
-  const templateR = await deps.resolveKey("template", { flags: { template: flags.template } });
-  // v0 ships the OpenAI-compatible adapter (this ticket); Anthropic is 06.
+  // endpoint; only a non-local baseUrl demands one. It keeps its own seam —
+  // keys never consult git config, unlike the bundle above.
   const apiKeyR = await deps.resolveApiKey("openai");
 
-  const baseUrl = baseUrlR?.value ?? process.env.OPENAI_BASE_URL ?? DEFAULT_BASE_URL;
-  const model = modelR?.value ?? DEFAULT_MODEL;
+  const pipeEnv = deps.env ?? process.env;
+  const baseUrl = bundle.baseUrl?.value ?? pipeEnv.OPENAI_BASE_URL ?? DEFAULT_BASE_URL;
+  const model = bundle.model?.value ?? DEFAULT_MODEL;
+  const templateRaw = bundle.template?.value?.trim() ?? "";
 
   const isLocal = isLocalBaseUrl(baseUrl);
-  if (!isLocal && (apiKeyR === null || apiKeyR.value === "")) {
-    return {
-      ok: false,
-      exitCode: 1,
-      message: [
-        "commitshi: no API key found for a non-local provider",
-        "",
-        `Serve a local endpoint (e.g. Ollama) and set baseUrl, or provide a key via`,
-        `  OPENAI_API_KEY (env) or openai_api_key= in the config file.`,
-      ].join("\n"),
-    };
+  // Key demand, resolved here once — the check main.ts used to mirror before
+  // the staged guard.
+  const envKey = pipeEnv.OPENAI_API_KEY;
+  const hasKey =
+    (apiKeyR !== null && apiKeyR.value !== "") || (envKey !== undefined && envKey !== "");
+  if (!isLocal && !hasKey) {
+    return { ok: false, exitCode: 1, kind: "missing-key", message: missingKeyMessage("openai") };
   }
   // Never forward a real credential to a local server: local endpoints
   // (Ollama & friends) don't consult it, and a stray OPENAI_API_KEY must not
   // leak to whatever happens to be listening on localhost.
   const apiKey = isLocal ? undefined : apiKeyR?.value;
 
-  const templateRaw = templateR?.value?.trim() ?? "";
   const template = templateRaw === "" ? DEFAULT_CONVENTIONAL_TEMPLATE : templateRaw;
   const parsed = parseTemplate(template);
   if (!parsed.ok) {

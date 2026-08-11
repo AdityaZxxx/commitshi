@@ -1,6 +1,6 @@
 import { parseArgs, USAGE, type CliFlags } from "./cli.ts";
 import { guardStagedChanges, recentCommitSubjects, stagedDiff } from "./git.ts";
-import { isLocalBaseUrl, makeResolveApiKey, makeResolveKey, missingKeyMessage, type Deps } from "./config.ts";
+import { makeResolveApiKey, resolveBundle, type Deps } from "./config.ts";
 import { DEFAULT_BASE_URL, generateDraft, setRegenerateTemperatureOverride, type PipelineDeps } from "./pipeline.ts";
 import { interactLoop, type AskKey, type DraftAttempt } from "./loop.ts";
 import { commitAcceptedMessage, type CommitResult } from "./commit.ts";
@@ -21,41 +21,15 @@ export type MainDeps = Readonly<{
   commit?: (message: string) => Promise<CommitResult>;
   /** Config seams for tests; production resolves env + the default file path. */
   config?: Deps;
-  /** Setup wizard seam for tests; production runs the real wizard. */
+  /** Wizard body seam (tests): replaces the wizard outright, standalone and mid-run. */
   setup?: (out: Pick<typeof process.stdout, "write">, err: Pick<typeof process.stderr, "write">) => Promise<{ exitCode: number }>;
+  /** Wizard option seam: replaces the options runSetup receives when the
+   *  pipeline reports a missing key mid-run (tests inject nextLine etc.). */
+  setupInput?: Parameters<typeof runSetup>[0];
   /** TTY seams for the setup trigger (tests); production reads process.isTTY. */
   stdinIsTTY?: boolean;
   stdoutIsTTY?: boolean;
 }>;
-
-/**
- * True unless the flags + env alone make a usable bundle: a non-local URL
- * plus a key-bearing env var, or an explicitly local URL (no key needed),
- * with a model present. Used by the auto-trigger so a fully one-shot
- * invocation never detours into the wizard.
- */
-function flagsCoverBundle(env: NodeJS.ProcessEnv, flags: CliFlags): boolean {
-  if (flags.baseUrl === undefined) return false;
-  if (isLocalBaseUrl(flags.baseUrl)) return true;
-  return env.OPENAI_API_KEY !== undefined && env.OPENAI_API_KEY !== "";
-}
-
-/**
- * True unless the resolved config is usable as-is: a key via env for a
- * non-local endpoint, or a key in the config file for a non-local baseUrl,
- * or a resolved baseUrl that is itself local. The pipeline's own
- * OPENAI_BASE_URL fallback counts too. Mirrors the pipeline's key demand so
- * the wizard never opens where a draft could have been produced.
- */
-async function configBundleUsable(env: NodeJS.ProcessEnv, config: Deps): Promise<boolean> {
-  const resolveKey = makeResolveKey(config);
-  const baseUrlR = await resolveKey("baseUrl");
-  const baseUrl = baseUrlR?.value ?? env.OPENAI_BASE_URL ?? DEFAULT_BASE_URL;
-  if (isLocalBaseUrl(baseUrl)) return true;
-  if (env.OPENAI_API_KEY !== undefined && env.OPENAI_API_KEY !== "") return true;
-  const apiKeyR = await makeResolveApiKey(config)("openai");
-  return apiKeyR !== null && apiKeyR.value !== "";
-}
 
 /** Runs the CLI. Each stage returns the process exit code; main() applies it. */
 export async function main(
@@ -76,9 +50,6 @@ export async function main(
     return 0;
   }
 
-  const configDeps = deps.config ?? {};
-  const configEnv = configDeps.env ?? process.env;
-
   // --setup: force the wizard standalone — no git repo, no staged guard.
   if (flags.setup) {
     if (deps.setup !== undefined) {
@@ -97,36 +68,9 @@ export async function main(
     return result.exitCode;
   }
 
-  // First-run auto-trigger (ticket 11): open the wizard BEFORE the staged
-  // guard when the resolved bundle is unusable, but only on a real terminal.
-  // A piped/CI run (the --no-commit contract) keeps the existing loud
-  // refusal here, or falls through to the pipeline's own refusal otherwise.
   const stdinIsTTY = deps.stdinIsTTY ?? Boolean(process.stdin.isTTY);
   const stdoutIsTTY = deps.stdoutIsTTY ?? Boolean(process.stdout.isTTY);
-  if (stdinIsTTY && stdoutIsTTY && !flags.noCommit) {
-    if (!flagsCoverBundle(configEnv, flags) && !(await configBundleUsable(configEnv, configDeps))) {
-      if (deps.setup !== undefined) {
-        const code = (await deps.setup(stdout, stderr)).exitCode;
-        if (code !== 0) stderr.write(`${missingKeyMessage("openai")}\n`);
-        return code;
-      }
-      const result = await runSetup(
-        {
-          env: deps.config?.env,
-          configFilePath: deps.config?.configFilePath,
-        },
-        stdout,
-        stderr,
-      );
-      if (result.exitCode !== 0) {
-        stderr.write(`${missingKeyMessage("openai")}\n`);
-        return 1;
-      }
-    }
-  } else if (!flags.noCommit && !flagsCoverBundle(configEnv, flags) && !(await configBundleUsable(configEnv, configDeps))) {
-    stderr.write(`${missingKeyMessage("openai")}\n`);
-    return 1;
-  }
+  const configEnv = deps.config?.env ?? process.env;
 
   let guard;
   try {
@@ -149,15 +93,16 @@ export async function main(
       ? { ok: true, draft: result.message, truncated: result.truncated, numstat: result.numstat }
       : { ok: false, exitCode: result.exitCode, message: result.message };
 
-  const generate = (): Promise<Awaited<ReturnType<typeof generateDraft>>> =>
+  const runPipeline = (): ReturnType<typeof generateDraft> =>
     generateDraft({
       stagedDiff: () => stagedDiff(),
       // Wire the history seam ONLY when the user opted in with --style:
       // flags.style && recentCommitSubjects — without the flag the dep is
       // absent and the no-history guarantee is structural, not a promise.
       styleHistory: flags.style ? () => recentCommitSubjects() : undefined,
-      resolveKey: makeResolveKey(deps.config ?? {}),
+      resolveBundle: (f) => resolveBundle(deps.config ?? {}, f),
       resolveApiKey: makeResolveApiKey(deps.config ?? {}),
+      env: configEnv,
       chat: deps.chat,
       flags: {
         model: flags.model,
@@ -168,7 +113,26 @@ export async function main(
       },
     });
 
-  const first = attemptFrom(await generate());
+  // Generate the first draft. Key demand is the pipeline's call, reported
+  // as a draft result; main's only job is mapping the missing-key variant:
+  // interactive TTY (and not --no-commit) → run the wizard, draft once more;
+  // otherwise the result's message is printed and its exit code used.
+  let firstResult = await runPipeline();
+  if (!firstResult.ok && firstResult.kind === "missing-key" && !flags.noCommit && stdinIsTTY && stdoutIsTTY) {
+    const code =
+      deps.setup !== undefined
+        ? (await deps.setup(stdout, stderr)).exitCode
+        : (
+            await runSetup(
+              deps.setupInput ?? { env: deps.config?.env, configFilePath: deps.config?.configFilePath },
+              stdout,
+              stderr,
+            )
+          ).exitCode;
+    if (code !== 0) return code;
+    firstResult = await runPipeline();
+  }
+  const first = attemptFrom(firstResult);
 
   // --no-commit stays headless: print the finished message and exit with no
   // interaction, exactly as ticket 05 locked in. A truncated digest is still
@@ -192,8 +156,8 @@ export async function main(
     stdin: process.stdin,
     stdout,
     stderr,
-    stdinIsTTY: loopDeps?.stdinIsTTY,
-    stdoutIsTTY: loopDeps?.stdoutIsTTY,
+    stdinIsTTY: loopDeps?.stdinIsTTY ?? stdinIsTTY,
+    stdoutIsTTY: loopDeps?.stdoutIsTTY ?? stdoutIsTTY,
     env: loopDeps?.env,
     // The editor must see the real stdio, so tests inject their own spawn.
     spawn: loopDeps?.spawn,
@@ -203,7 +167,7 @@ export async function main(
     regenerate: async () => {
       setRegenerateTemperatureOverride(0.3);
       try {
-        return attemptFrom(await generate());
+        return attemptFrom(await runPipeline());
       } finally {
         setRegenerateTemperatureOverride(null);
       }

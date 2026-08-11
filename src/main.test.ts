@@ -104,15 +104,14 @@ describe("main", () => {
       expect(err.text()).toContain("nothing staged");
     });
 
-    // Ticket 11: pre-staging trigger. A fresh user (empty config, no
-    // OPENAI_API_KEY, nothing staged) on a TTY gets the wizard, NOT the
-    // "nothing staged" error — the check runs before guardStagedChanges.
-    // The setup seam stands in for the wizard so the assertion is on the
-    // main.ts wiring; the same scenario end-to-end through the pipeline's
-    // own refusal lives in setup.test.ts.
-    test("empty config on a TTY opens the wizard before the staged guard, never 'nothing staged'", async () => {
+    // Tickets 11/14: key demand is the pipeline's call, reported as a
+    // missing-key draft result; main maps it to the wizard on a TTY. With
+    // nothing staged the guard still wins — the wizard appears only once a
+    // draft is actually possible (staged changes are the tool's only input).
+    test("empty config on a TTY with nothing staged says 'nothing staged', no wizard (guard precedes key demand)", async () => {
       const dir = realpathSync(await mkdtemp(join(tmpdir(), "commitshi-setup-")));
       const configPath = join(dir, "commitshi", "config");
+      await git(workdir, "init", "-q");
       const out = capture();
       const err = capture();
       let opened = 0;
@@ -125,41 +124,15 @@ describe("main", () => {
           return { exitCode: 1 };
         },
       });
-      expect(opened).toBe(1);
+      expect(opened).toBe(0);
       expect(code).toBe(1);
-      expect(err.text()).not.toContain("nothing staged");
-      expect(err.text()).toContain("no API key");
+      expect(err.text()).toContain("nothing staged");
+      expect(err.text()).not.toContain("no API key");
     });
 
-    test("a fully flag/env-covered one-shot skip: the wizard never opens and the guard runs", async () => {
-      const dir = realpathSync(await mkdtemp(join(tmpdir(), "commitshi-setup-")));
-      const configPath = join(dir, "commitshi", "config");
-      const out = capture();
-      const err = capture();
-      let opened = 0;
-      const code = await main(
-        ["--no-commit", "--base-url", "https://api.example.com/v1", "--model", "some-model"],
-        out.stream,
-        err.stream,
-        {
-          chat: stubChat,
-          config: {
-            configFilePath: configPath,
-            env: { OPENAI_API_KEY: "sk-flag-run" },
-            gitConfigGet: async () => null,
-          },
-          stdinIsTTY: true,
-          stdoutIsTTY: true,
-          setup: async () => {
-            opened++;
-            return { exitCode: 0 };
-          },
-        },
-      );
-      expect(opened).toBe(0);
-      expect(code).not.toBe(0);
-      expect(err.text()).toContain("not a git repository");
-    });
+    // The wizard's positive path (fires after the guard, writes config,
+    // drafts in the same run) is proven end to end through the real wizard
+    // in setup.test.ts; the piped/--no-commit refusal lives there too.
 
     // Ticket 05 tracer bullet: a stubbed model stands in for the provider so
     // the end-to-end path (guard → diff → compact → template → fill → print)

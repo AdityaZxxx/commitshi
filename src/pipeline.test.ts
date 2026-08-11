@@ -15,15 +15,23 @@ const DIFF = [
   "+export const login = () => session();",
 ].join("\n");
 
-/** A resolveKey that honors flags (top of the precedence chain) then "committed" config values. */
-const makeResolveKey =
-  (committed: Partial<Record<string, string>> = {}): PipelineDeps["resolveKey"] =>
-  async (key, opts) => {
-    const fromFlag = opts?.flags?.[key];
-    if (fromFlag !== undefined && fromFlag !== "") return { value: fromFlag, source: "flag" };
-    const value = committed[key];
-    if (value !== undefined && value !== "") return { value, source: "config file" };
-    return null;
+/** A bundle resolver that honors flags (top of the precedence chain) then
+ *  "committed" config values — the test twin of config.ts's resolveBundle. */
+const makeResolveBundle =
+  (committed: Partial<Record<string, string>> = {}): PipelineDeps["resolveBundle"] =>
+  async (flags = {}) => {
+    type R = { value: string; source: import("./config.ts").Source };
+    const out: Partial<Record<"provider" | "baseUrl" | "model" | "template", R>> = {};
+    for (const key of ["provider", "baseUrl", "model", "template"] as const) {
+      const fromFlag = flags[key];
+      if (fromFlag !== undefined && fromFlag !== "") {
+        out[key] = { value: fromFlag, source: "flag" };
+        continue;
+      }
+      const value = committed[key];
+      if (value !== undefined && value !== "") out[key] = { value, source: "config file" };
+    }
+    return out;
   };
 
 const LOCAL_BASE = { baseUrl: "http://localhost:11434/v1" };
@@ -38,7 +46,7 @@ const makeRecordingChat = (reply: string, captured: { user?: string; system?: st
 
 const baseDeps = (committed: Partial<Record<string, string>> = {}): PipelineDeps => ({
   stagedDiff: async () => DIFF,
-  resolveKey: makeResolveKey({ baseUrl: LOCAL_BASE.baseUrl, ...committed }),
+  resolveBundle: makeResolveBundle({ baseUrl: LOCAL_BASE.baseUrl, ...committed }),
   resolveApiKey: async () => null,
   chat: async () => ({ ok: true as const, content: "" }), // replaced per test
 });

@@ -116,6 +116,55 @@ export const makeResolveKey =
     return gitConfigGet(`commitshi.${key.toLowerCase()}`);
   };
 
+/** The config keys a draft resolves through the bundle (not the API key —
+ *  that stays behind its own seam and never touches git config). */
+export const BUNDLE_KEYS = ["provider", "baseUrl", "model", "template"] as const;
+export type BundleKey = (typeof BUNDLE_KEYS)[number];
+
+/** The resolved draft bundle: one value per draft-facing key, if found.
+ *  Absent means "caller substitutes its default" — resolution never invents. */
+export type ConfigBundle = Readonly<Partial<Record<BundleKey, Resolved>>>;
+
+/**
+ * Resolves the draft-facing config in ONE read of the config file: for each
+ * bundle key, flag > env > config file > repo git-config > global git-config.
+ * One disk read total where `makeResolveKey`(per key) would do one per key.
+ * The API key is deliberately absent — it lives behind `makeResolveApiKey`,
+ * which never consults git config (keys must not leak into .git/config).
+ */
+export async function resolveBundle(
+  deps: Deps = {},
+  flags: Partial<Record<BundleKey, string | undefined>> = {},
+): Promise<ConfigBundle> {
+  const env = deps.env ?? process.env;
+  const gitConfigGet = deps.gitConfigGet ?? liveGitConfigGet;
+  // One read, shared across every key in the bundle.
+  const file = await readConfigFile(deps.configFilePath ?? defaultConfigFilePath(env));
+
+  const out: Partial<Record<BundleKey, Resolved>> = {};
+  for (const key of BUNDLE_KEYS) {
+    const fromFlag = flags[key];
+    if (fromFlag !== undefined && fromFlag !== "") {
+      out[key] = { value: fromFlag, source: "flag" };
+      continue;
+    }
+    const envName = `COMMITSHI_${key.toUpperCase().replace(/-/g, "_")}`;
+    const fromEnv = env[envName];
+    if (fromEnv !== undefined && fromEnv !== "") {
+      out[key] = { value: fromEnv, source: "env" };
+      continue;
+    }
+    const fromFile = file.get(key.toLowerCase());
+    if (fromFile !== undefined && fromFile !== "") {
+      out[key] = { value: fromFile, source: "config file" };
+      continue;
+    }
+    const fromGit = await gitConfigGet(`commitshi.${key.toLowerCase()}`);
+    if (fromGit !== null) out[key] = fromGit;
+  }
+  return out;
+}
+
 /**
  * True when a base URL points at the local machine, which legitimately
  * serves without an API key (Ollama & friends). Reused by the pipeline's

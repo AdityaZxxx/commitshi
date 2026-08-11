@@ -272,7 +272,7 @@ describe("runSetup — the one config-write path (ticket 11)", () => {
   });
 });
 
-describe("auto-trigger (ticket 11): the wizard fires pre-staging on a TTY, never in a pipe", () => {
+describe("auto-trigger (tickets 11/14): missing-key draft result → wizard → retry", () => {
 
   test("--setup standalone: runs outside a git repo, writes the config, exits 0 without touching the staged guard", async () => {
     const { configPath } = await sandbox();
@@ -292,25 +292,50 @@ describe("auto-trigger (ticket 11): the wizard fires pre-staging on a TTY, never
     expect(err.text()).not.toContain("nothing staged");
   });
 
-  test("auto-trigger fires on a TTY with an unusable bundle, before the staged-guard message", async () => {
+  test("auto-trigger fires after the staged guard on a TTY: wizard writes the config, the same run drafts", async () => {
     const { configPath } = await sandbox();
-    const out = capture();
-    const err = capture();
-    let opened = 0;
-    const code = await main([], out.stream, err.stream, {
-      config: { configFilePath: configPath, env: {} },
-      stdinIsTTY: true,
-      stdoutIsTTY: true,
-      setup: async () => {
-        opened++;
-        return { exitCode: 0 };
-      },
-    });
-    expect(code).toBe(0);
-    expect(opened).toBe(1);
-    // Pre-staging: a fresh user sees setup, never "nothing staged".
-    expect(err.text()).not.toContain("nothing staged");
-    expect(out.text()).not.toContain("feat: add");
+    const workdir = realpathSync(await mkdtemp(join(tmpdir(), "commitshi-trigger-")));
+    await exec("git", ["init", "-q"], workdir);
+    await writeFile(join(workdir, "a.txt"), "one\n");
+    await exec("git", ["add", "a.txt"], workdir);
+    const previousCwd = process.cwd();
+    process.chdir(workdir);
+    try {
+      const out = capture();
+      const err = capture();
+      let chatCalls = 0;
+      // End to end through the REAL wizard: scripted lines fill the config
+      // file, the pipeline's missing-key result fires it, the retry picks up
+      // the freshly written bundle and drafts in the same run.
+      const code = await main([], out.stream, err.stream, {
+        chat: async () => {
+          chatCalls++;
+          return { ok: true as const, content: "type: feat\nscope: -\nsummary: add a.txt\nbody: -" };
+        },
+        config: { configFilePath: configPath, env: {}, gitConfigGet: async () => null },
+        stdinIsTTY: true,
+        stdoutIsTTY: true,
+        loop: { ask: async () => "\r" }, // accept at the decision prompt
+        commit: async () => ({ ok: true as const }),
+        setupInput: {
+          stdinIsTTY: true,
+          stdoutIsTTY: true,
+          env: {},
+          configFilePath: configPath,
+          nextLine: scriptedLines(["http://localhost:11434/v1", "", ""]),
+        },
+      });
+      expect(code).toBe(0);
+      expect(out.text()).toContain("commitshi setup");
+      expect(out.text()).toContain("feat: add a.txt");
+      expect(out.text()).toContain("committed");
+      expect(chatCalls).toBe(1);
+      const written = await readConfigFile(configPath);
+      expect(written.get("baseurl")).toBe("http://localhost:11434/v1");
+    } finally {
+      process.chdir(previousCwd);
+      await rm(workdir, { recursive: true, force: true });
+    }
   });
 
   test("auto-trigger skips when --base-url + --model + OPENAI_API_KEY cover the bundle", async () => {
@@ -376,7 +401,7 @@ describe("auto-trigger (ticket 11): the wizard fires pre-staging on a TTY, never
         chatCalls++;
         return { ok: true as const, content: "type: feat\nscope: -\nsummary: x\nbody: -" };
       },
-      config: { configFilePath: configPath, env: {}, gitConfigGet: async () => null },
+      config: { configFilePath: configPath, env: { OPENAI_API_KEY: "sk-ci" }, gitConfigGet: async () => null },
       stdinIsTTY: false,
       stdoutIsTTY: true,
       setup: async () => {
@@ -385,11 +410,12 @@ describe("auto-trigger (ticket 11): the wizard fires pre-staging on a TTY, never
       },
     });
     expect(opened).toBe(0);
-    // No wizard, no silent proceed: the run stops non-zero at a boundary
-    // before any model call, with the pipeline's own loud refusal intact
-    // for --no-commit in CI (guarded in main.ts by the !flags.noCommit gate).
+    // No wizard, no silent proceed: the run stops non-zero at the guard
+    // boundary (repo-dependent wording) before any model call — the
+    // missing-key result never routes to the wizard off a TTY.
     expect(code).toBe(1);
     expect(chatCalls).toBe(0);
+    expect(err.text()).toMatch(/nothing staged|not a git repository/);
   });
 });
 

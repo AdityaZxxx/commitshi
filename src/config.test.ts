@@ -127,3 +127,53 @@ describe("resolveApiKey", () => {
     expect(err).toContain("~/.config/commitshi/config");
   });
 });
+
+describe("resolveBundle", () => {
+  test("resolves all four keys in one pass, honoring flag > env > file > git per key", async () => {
+    await withTempDir(async (dir) => {
+      const file = join(dir, "config");
+      await writeFile(file, "model=file-model\ntemplate={summary}\n");
+      const bundle = await config.resolveBundle(
+        {
+          env: { COMMITSHI_MODEL: "env-model" },
+          configFilePath: file,
+          gitConfigGet: async () => ({ value: "git-scope", source: "repo git-config" }),
+        },
+        { model: "flag-model", provider: "flag-provider" },
+      );
+      // flag wins
+      expect(bundle.model).toEqual({ value: "flag-model", source: "flag" });
+      expect(bundle.provider).toEqual({ value: "flag-provider", source: "flag" });
+      // env wins over file/git when the flag is absent
+      expect(bundle.baseUrl).toEqual({ value: "git-scope", source: "repo git-config" });
+      // file wins over git when neither flag nor env is set
+      expect(bundle.template).toEqual({ value: "{summary}", source: "config file" });
+    });
+  });
+
+  test("absent keys are simply not present — the caller substitutes defaults", async () => {
+    await withTempDir(async (dir) => {
+      const bundle = await config.resolveBundle(
+        { env: {}, configFilePath: join(dir, "absent"), gitConfigGet: async () => null },
+        {},
+      );
+      expect(bundle.model).toBeUndefined();
+      expect(bundle.baseUrl).toBeUndefined();
+      expect(bundle.provider).toBeUndefined();
+      expect(bundle.template).toBeUndefined();
+    });
+  });
+
+  test("env precedence per key, not globally — model from env, provider from file", async () => {
+    await withTempDir(async (dir) => {
+      const file = join(dir, "config");
+      await writeFile(file, "provider=anthropic\nmodel=file-model\n");
+      const bundle = await config.resolveBundle(
+        { env: { COMMITSHI_MODEL: "env-model" }, configFilePath: file, gitConfigGet: async () => null },
+        {},
+      );
+      expect(bundle.provider).toEqual({ value: "anthropic", source: "config file" });
+      expect(bundle.model).toEqual({ value: "env-model", source: "env" });
+    });
+  });
+});
