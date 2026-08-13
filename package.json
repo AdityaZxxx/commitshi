@@ -20,7 +20,8 @@
   },
   "type": "module",
   "bin": {
-    "commitshi": "bin/commitshi.ts"
+    "commitshi": "bin/commitshi.ts",
+    "shi": "bin/commitshi.ts"
   },
   "files": [
     "bin",
@@ -29,7 +30,9 @@
   ],
   "scripts": {
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "commitshi": "bun bin/commitshi.ts",
+    "shi": "bun bin/commitshi.ts"
   },
   "engines": {
     "bun": ">=1.1",
