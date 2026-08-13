@@ -5,11 +5,11 @@ A CLI tool that converts the staged changes in a git repo into a concise commit 
 ## Language
 
 **Commit draft**:
-The model-generated commit message, proposed for the user to accept, edit, or discard. It becomes the actual message only after the user confirms.
+The model-generated commit message, proposed for the user to accept, edit, revise, or discard. It becomes the actual message only after the user confirms.
 _Avoid_: "output", "suggestion", "final message"
 
 **Inline edit**:
-Editing the current commit draft with `i` — the whole draft appears as one pre-filled line, readline-style, and the user edits it in one go and presses Enter. Distinct from `$EDITOR` (`e`), which is the heavy escape hatch for rewriting the whole message. (Multi-line inline edit was considered and dropped after research showed the ecosystem doesn't ship it — see `.scratch/product-research/inline-edit-ux.md`.)
+Editing the current commit draft with `i` — the subject and body appear as a mini-buffer with a `>` gutter, block cursor, and arrow-key navigation. Users can edit subject and body lines in place, split/merge lines with Enter/Backspace, and save with Ctrl+S/Ctrl+Enter or cancel with Esc. Distinct from `$EDITOR` (`e`), which opens the system editor for a full rewrite.
 _Avoid_: "form edit", "field edit", "quick edit"
 
 **Compacted diff**:
@@ -26,3 +26,7 @@ The files the user has `git add`ed — the only input the tool consumes. Unstage
 **Style history**:
 The recent commit subjects the model is shown (last ~8) to pick up the repo's local voice — only when the user opts in with `--style`; never read silently.
 _Avoid_: "history context", "commit log sample"
+
+**Revise**:
+A post-generation edit mode triggered by `p` that asks for a one-liner instruction and re-runs the model conditioned on the compacted diff, the current draft, and the instruction. Produces a new draft version with a `(revised)` badge, distinct from `r` regenerate which discards the current draft.
+_Avoid_: "regenerate", "rewrite"

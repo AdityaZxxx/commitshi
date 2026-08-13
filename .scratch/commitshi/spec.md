@@ -16,7 +16,7 @@ First-run setup is a **constrained wizard**: it fires only when the tool genuine
 4. Model fills exactly one token per template token — `{type}`, `{scope}`, `{summary}`, `{body}` — constrained to the template's shape. No freeform output.
 
 **Instructions precedence**: instructions from `--instructions` outrank the template and default conventions — they may reword `{summary}`/`{body}` and steer type/scope selection, but they can never break the strict token-fill shape (no fifth token, no text outside token positions). One-shot flag only; not persisted as config in v0.
-5. Show inline: Enter=accept, `e` = open in `$EDITOR`, `r` = regenerate the draft. `--no-commit` stops here, printing the finished message.
+5. Show interactive frame: Enter=accept, `i` = edit inline, `e` = open in `$EDITOR`, `r` = regenerate draft, `p` = revise draft with one-liner instruction, `q` = quit. D drafts show `(edited)` and/or `(revised)` badges as applicable. `--no-commit` stops here, printing the finished message.
 6. Commit via `git commit -F -` (stdin); local hooks run. `commitshi` never runs `git add`.
 
 ## Non-features
@@ -40,7 +40,7 @@ The setup wizard is the **only place** that writes config, and it writes exactly
 - `--template` — one-shot template override
 - `--provider` / `--model` — one-shot overrides
 
-The initial commit draft and the regenerate variant use different sampling temperatures: the initial draft is sent at temperature 0 so it is the model's deterministic best guess for the diff, and `r` is sent at temperature 0.3 so each regeneration explores an alternative wording. The override is reset on every entry to the draft pipeline, so it never leaks from a regenerate into a later initial call — the temperature split is a property of the call site, not a persistent setting.
+The initial commit draft is sent at temperature 0 so it is the model's deterministic best guess for the diff. Regenerate `r` uses temperature 0.3 to explore alternative wording. Revise `p` also uses temperature ~0.3 but conditions on the current draft + a user instruction plus the compacted diff. The override is reset on every entry to the draft pipeline, so it never leaks from a regenerate/revise into a later initial call — the temperature split is a property of the call site, not a persistent setting.
 
 ## Setup wizard triggers
 
