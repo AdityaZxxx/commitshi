@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   buildFillInstructions,
+  buildPrompt,
   DEFAULT_CONVENTIONAL_TEMPLATE,
   parseTemplate,
   segmentTemplate,
@@ -181,5 +182,32 @@ describe("buildFillInstructions", () => {
     const s = buildFillInstructions(["summary"]);
     expect(s).toContain("summary:");
     expect(s).not.toContain("body:");
+  });
+});
+
+describe("buildPrompt — PromptPolicy integration", () => {
+  test("system prompt contains grounding, commit semantics, user instruction and style policies", () => {
+    const p = buildPrompt(DEFAULT_CONVENTIONAL_TEMPLATE);
+    expect(p).toContain("GROUNDING POLICY");
+    expect(p).toContain("Treat the provided diff as the source of truth for what changed");
+    expect(p).toContain("Use file names as authoritative evidence of which files are represented in the input");
+    expect(p).toContain("COMMIT SEMANTICS");
+    expect(p).toContain("Prefer the smallest accurate claim");
+    expect(p).toContain("COMMIT TYPE");
+    expect(p).toContain("Use feat for a new user-facing capability");
+    expect(p).toContain("Use refactor for restructuring code without changing intended behavior");
+    expect(p).toContain("Do not choose feat merely because new code or functionality was added internally");
+    expect(p).toContain("USER INSTRUCTION POLICY");
+    expect(p).toContain("may not introduce unsupported factual claims");
+    expect(p).toContain("STYLE HISTORY POLICY");
+    expect(p).toContain("Style history is provided only as a stylistic reference");
+    expect(p).toContain("Reply with exactly these lines");
+  });
+  test("output contract remains identical before/after refactor for conventional template", () => {
+    const p = buildPrompt(DEFAULT_CONVENTIONAL_TEMPLATE);
+    expect(p).toContain("type: <one word, one of:");
+    expect(p).toContain("scope: <one short word");
+    expect(p).toContain("summary: <one short imperative line");
+    expect(p).toContain("body: <one short paragraph");
   });
 });

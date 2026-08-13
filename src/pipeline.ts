@@ -168,7 +168,7 @@ export async function generateDraft(deps: PipelineDeps): Promise<DraftResult> {
           "",
           "Recent commit subjects from this repository, newest first:",
           ...subjects.map((s) => `- ${s}`),
-          "Match their local conventions (type vocabulary, scope style, summary phrasing) where they agree.",
+          "Style history is provided only as a stylistic reference. Do not copy factual claims from history unless supported by the current diff.",
         ].join("\n"),
       );
     }
@@ -182,7 +182,7 @@ export async function generateDraft(deps: PipelineDeps): Promise<DraftResult> {
         "",
         instructions,
         "",
-        "These instructions outrank the template and default conventions: they may steer the type/scope choice and reword the summary and body, but they can never break the fill contract — exactly one value per template line, and no text outside those lines.",
+        "User instructions may influence wording, emphasis, scope, and style, but may not introduce unsupported factual claims or violate the output contract.",
       ].join("\n"),
     );
   }
@@ -193,7 +193,7 @@ export async function generateDraft(deps: PipelineDeps): Promise<DraftResult> {
     renderCompacted(compacted),
     ...extras,
     "",
-    "Fill every template token from this diff only.",
+    "Use the provided changes as the factual source of truth. Follow applicable formatting and wording instructions, but do not introduce factual claims unsupported by the provided changes.",
   ].join("\n");
 
   const chat = deps.chat ?? chatCompletions;
@@ -296,7 +296,7 @@ export async function reviseDraft(deps: PipelineDeps, currentDraft: string, inst
           "",
           "Recent commit subjects from this repository, newest first:",
           ...subjects.map((s) => `- ${s}`),
-          "Match their local conventions (type vocabulary, scope style, summary phrasing) where they agree.",
+          "Style history is provided only as a stylistic reference. Do not copy factual claims from history unless supported by the current diff.",
         ].join("\n"),
       );
     }
@@ -311,13 +311,15 @@ export async function reviseDraft(deps: PipelineDeps, currentDraft: string, inst
     "",
     currentDraft,
     "",
+    "Note: The existing draft is not authoritative. Treat it only as candidate wording. Re-check its factual claims against the compacted diff and correct or remove unsupported claims.",
+    "",
     "### Revision instruction",
     "",
     instruction.trim(),
     "",
     ...extras,
     "",
-    "Revise the existing draft to follow the revision instruction while staying grounded in the compacted diff. Fill every template token.",
+    "Use the provided changes as the factual source of truth. Revise the existing draft to follow the revision instruction while staying grounded in the compacted diff. Fill every template token.",
   ].join("\n");
 
   const chat = deps.chat ?? chatCompletions;

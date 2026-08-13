@@ -240,7 +240,14 @@ function fileHeader(file: DiffFile): string | null {
 
 /** Renders the compacted diff as the text the model actually sees. */
 export function renderCompacted(compacted: CompactedDiff): string {
-  const lines: string[] = ["### Staged changes (compacted)", ""];
+  const lines: string[] = [
+    "### Staged changes (compacted)",
+    "",
+    "The diff below is a compact representation of the staged changes.",
+    "Some unchanged context may be omitted.",
+    "Treat the displayed changes as authoritative; do not assume omitted context.",
+    "",
+  ];
   for (const stat of compacted.numstat) {
     const counts = stat.binary ? "binary" : `+${stat.added} -${stat.removed}`;
     lines.push(`${stat.path}: ${counts}`);

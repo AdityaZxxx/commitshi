@@ -298,6 +298,63 @@ export function buildFillInstructions(tokens: readonly TokenName[]): string {
   ].join("\n");
 }
 
+export type PromptPolicy = Readonly<{
+  tokens: readonly TokenName[];
+  conventional: boolean;
+  grounding: string;
+  commitSemantics: string;
+  userInstructionPolicy: string;
+  styleHistoryPolicy: string;
+  fillInstructions: string;
+}>;
+
+function buildPolicy(template: string): PromptPolicy {
+  const parsed = parseTemplate(template);
+  const conventional = parsed.ok && parsed.kind === "conventional";
+  const tokens: readonly TokenName[] = parsed.ok ? parsed.tokens : KNOWN_TOKENS;
+  const grounding = [
+    "FACTUAL AUTHORITY",
+    "Treat the provided diff as the source of truth for what changed.",
+    "Use file names as authoritative evidence of which files are represented in the input.",
+    "Do not invent changes, intent, files, bugs, or motivations.",
+    "Infer intent only when it is strongly supported by the changes.",
+    "When intent is uncertain, use a factual description of the change.",
+  ].join(" ");
+  const commitSemantics = [
+    "Describe the primary purpose of the change.",
+    "Prefer the smallest accurate claim over a broader speculative claim.",
+    "Do not claim a bug fix, feature, performance improvement, or breaking change unless supported by the changes.",
+    "",
+    "COMMIT TYPE",
+    "Choose the type that best represents the primary purpose of the change.",
+    "Use feat for a new user-facing capability.",
+    "Use fix for correcting incorrect behavior.",
+    "Use refactor for restructuring code without changing intended behavior.",
+    "Use docs for documentation-only changes.",
+    "Use test for test-only changes.",
+    "Use chore for maintenance that does not fit the categories above.",
+    "Do not choose feat merely because new code or functionality was added internally.",
+  ].join(" ");
+  const userInstructionPolicy = [
+    "User instructions may influence wording, emphasis, scope selection, and style.",
+    "User instructions may not introduce unsupported factual claims or violate the output contract.",
+  ].join(" ");
+  const styleHistoryPolicy = [
+    "Style history is provided only as a stylistic reference.",
+    "Do not copy factual claims from history into the current commit.",
+    "Do not assume the current change has the same intent as previous commits.",
+  ].join(" ");
+  return {
+    tokens,
+    conventional,
+    grounding,
+    commitSemantics,
+    userInstructionPolicy,
+    styleHistoryPolicy,
+    fillInstructions: buildFillInstructions(tokens),
+  };
+}
+
 /**
  * The system prompt the model sees, built from the template alone. Owns the
  * fill contract AND the prose rules it explains, so the two can never drift
@@ -307,17 +364,26 @@ export function buildFillInstructions(tokens: readonly TokenName[]): string {
  * strictFill step would have already rejected it with the precise reason.
  */
 export function buildPrompt(template: string): string {
-  const parsed = parseTemplate(template);
-  const conventional = parsed.ok && parsed.kind === "conventional";
-  const tokens: readonly TokenName[] = parsed.ok ? parsed.tokens : KNOWN_TOKENS;
+  const p = buildPolicy(template);
   return [
     "You write a git commit message for staged changes, shaped to a template.",
-    conventional
+    p.conventional
       ? "Follow the Conventional Commits style: a concise subject, an optional scope in parentheses, and an optional body when the change needs context."
       : "Follow the template's shape exactly; it is the required output format.",
-    "Base the message only on the compacted diff and the file names in it; do not invent files or changes.",
     "",
-    buildFillInstructions(tokens),
+    "GROUNDING POLICY",
+    p.grounding,
+    "",
+    "COMMIT SEMANTICS",
+    p.commitSemantics,
+    "",
+    "USER INSTRUCTION POLICY",
+    p.userInstructionPolicy,
+    "",
+    "STYLE HISTORY POLICY",
+    p.styleHistoryPolicy,
+    "",
+    p.fillInstructions,
   ].join("\n");
 }
 

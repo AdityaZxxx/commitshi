@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { generateDraft, setRegenerateTemperatureOverride, type PipelineDeps } from "./pipeline.ts";
+import { generateDraft, reviseDraft, setRegenerateTemperatureOverride, type PipelineDeps } from "./pipeline.ts";
 
 // Ticket 09 + 10: one-shot --instructions / --template / --style flags.
 // The chat seam captures the exact prompt sent to the model so every test
@@ -68,11 +68,11 @@ describe("generateDraft — default prompt is untouched (regression from 05)", (
     const again: { user?: string } = {};
     await generateDraft({ ...baseDeps(), chat: makeRecordingChat(OK_REPLY, again) });
     expect(again.user).toBe(captured.user);
-    // Contract: diff first, closing fill instruction last, and no
+    // Contract: diff first, closing instruction last, and no
     // ticket-09/10 sections (Staged changes header inside the digest is
     // the second header — that one predates these tickets).
     expect(captured.user).toMatch(/^### Compact diff\n\n### Staged changes/);
-    expect(captured.user).toMatch(/\n\nFill every template token from this diff only\.$/);
+    expect(captured.user).toMatch(/Use the provided changes as the factual source of truth/);
     expect(captured.user).not.toContain("### User instructions");
     expect(captured.user).not.toContain("### Style history");
   });
@@ -90,21 +90,22 @@ describe("generateDraft — --instructions (ticket 09)", () => {
     expect(result.ok).toBe(true);
     expect(captured.user).toContain("### User instructions");
     expect(captured.user).toContain("always use the type 'refactor'");
-    // Precedence wording told to the model: instructions outrank the template.
-    expect(captured.user).toContain("outrank");
+    // Instruction policy: may influence wording/style but not factual claims
+    expect(captured.user).toContain("may not introduce unsupported factual claims");
     expect(captured.user!.indexOf("### Compact diff")).toBeLessThan(captured.user!.indexOf("### User instructions"));
   });
 
   test("instructions tell the model the strict shape still holds (no fifth token)", async () => {
-    const captured: { user?: string } = {};
+    const captured: { user?: string; system?: string } = {};
     const deps: PipelineDeps = {
       ...baseDeps(),
       chat: makeRecordingChat(OK_REPLY, captured),
       flags: { instructions: "reword the summary" },
     };
     await generateDraft(deps);
-    expect(captured.user).toContain("fill contract");
-    expect(captured.user).toMatch(/exactly one value per template line/);
+    // Fill contract lives in the system prompt now
+    expect(captured.system).toContain("Reply with exactly these lines");
+    expect(captured.system).toContain("Fill every line");
   });
 
   test("the fill contract rejects an extra field even when instructions asked for it", async () => {
@@ -151,7 +152,7 @@ describe("generateDraft — --template one-shot override (ticket 09)", () => {
     expect(result.ok && result.message).toBe("fix: squash the flake");
     // The prompt names exactly the flag template's tokens — the persisted
     // template's {scope} token never reaches the model.
-    expect(captured.user).toContain("Fill every template token");
+    expect(captured.user).toContain("Use the provided changes as the factual source of truth");
   });
 
   test("the configured template persists for later runs (flag is not written back)", async () => {
@@ -327,5 +328,42 @@ describe("generateDraft — regenerate temperature (ticket r)", () => {
     await generateDraft({ ...baseDeps(), chat });
     setRegenerateTemperatureOverride(null);
     expect(temperatures).toEqual([0.3, 0]);
+  });
+});
+
+describe("reviseDraft — PromptPolicy guards", () => {
+  test("user prompt marks existing draft as candidate, not authority", async () => {
+    const captured: { user?: string } = {};
+    const deps: PipelineDeps = {
+      stagedDiff: async () => DIFF,
+      resolveBundle: makeResolveBundle({ baseUrl: LOCAL_BASE.baseUrl }),
+      resolveApiKey: async () => null,
+      chat: async (_d, req) => {
+        captured.user = req.messages[1]?.content ?? "";
+        return { ok: true as const, content: OK_REPLY };
+      },
+      flags: {},
+    };
+    const res = await reviseDraft(deps, "feat(auth): old claim", "make summary shorter");
+    expect(res.ok).toBe(true);
+    expect(captured.user).toContain("The existing draft is not authoritative");
+    expect(captured.user).toContain("Re-check its factual claims against the compacted diff");
+    expect(captured.user).toContain("Use the provided changes as the factual source of truth");
+  });
+
+  test("compact diff metadata about omission is present", async () => {
+    const captured: { user?: string } = {};
+    const deps: PipelineDeps = {
+      stagedDiff: async () => DIFF,
+      resolveBundle: makeResolveBundle({ baseUrl: LOCAL_BASE.baseUrl }),
+      resolveApiKey: async () => null,
+      chat: async (_d, req) => {
+        captured.user = req.messages[1]?.content ?? "";
+        return { ok: true as const, content: OK_REPLY };
+      },
+    };
+    await reviseDraft(deps, "feat: x", "reword");
+    expect(captured.user).toContain("The diff below is a compact representation");
+    expect(captured.user).toContain("Some unchanged context may be omitted");
   });
 });
