@@ -328,7 +328,7 @@ describe("auto-trigger (tickets 11/14): missing-key draft result → wizard → 
       expect(code).toBe(0);
       expect(out.text()).toContain("commitshi setup");
       expect(out.text()).toContain("feat: add a.txt");
-      expect(out.text()).toContain("committed");
+      expect(out.text()).toContain("Committed as #");
       expect(chatCalls).toBe(1);
       const written = await readConfigFile(configPath);
       expect(written.get("baseurl")).toBe("http://localhost:11434/v1");

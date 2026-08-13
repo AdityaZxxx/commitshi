@@ -41,6 +41,8 @@ export type LoopDeps = Readonly<{
   colorEnabled?: boolean;
   /** Produces a fresh draft for the same staged diff; failure ends the loop loud. */
   regenerate: () => Promise<DraftAttempt>;
+  /** Revise the current draft with a user instruction; failure ends the loop loud. */
+  revise?: (draft: string, instruction: string) => Promise<DraftAttempt>;
   /** Loader seam (tests): called around await regenerate(). Production shows
    *  the spinner; tests may inject a no-op. */
   startLoader?: (label: string, write: (s: string) => unknown, isTTY: boolean) => { stop: () => void };
@@ -62,7 +64,7 @@ export type LoopResult =
  * `i` splits into the EDIT floor below the rows; the DRAFT section keeps the
  * default English names for the commands, single-bucket and consultable).
  */
-const PROMPT = "[Enter] accept  ·  [i] edit here  ·  [e] edit in editor  ·  [r] regenerate  ·  [q] quit";
+const PROMPT = "[Enter] accept  ·  [i] edit here  ·  [e] edit in editor  ·  [r] regenerate  ·  [p] revise  ·  [q] quit";
 
 type FileIo = { file: (path: string) => { text: () => Promise<string> } };
 
@@ -198,6 +200,7 @@ export async function interactLoop(first: DraftAttempt, deps: LoopDeps): Promise
   let attempt = first;
   let regenerations = 0;
   let edited = false; // set after a successful edit ($EDITOR or inline); shows the (edited) badge
+  let revised = false; // set after a successful revise; shows the (revised) badge
 
   // The color gate resolves once: TTY + !NO_COLOR + !CI. The render seam is
   // presentDraft; the prompt string stays exactly the 12-pinned constant.
@@ -246,6 +249,7 @@ export async function interactLoop(first: DraftAttempt, deps: LoopDeps): Promise
         draft,
         draftNumber: 1 + regenerations,
         edited,
+        revised,
         truncated: attempt.truncated,
         numstat: attempt.numstat,
         prompt: PROMPT,
@@ -281,6 +285,7 @@ export async function interactLoop(first: DraftAttempt, deps: LoopDeps): Promise
       }
       attempt = { ok: true, draft: editResult.text, truncated: false, numstat: attempt.numstat };
       edited = true;
+      revised = false;
       needsRender = true;
       continue;
     }
@@ -302,12 +307,15 @@ export async function interactLoop(first: DraftAttempt, deps: LoopDeps): Promise
       }
       attempt = { ok: true, draft: editResult.text, truncated: false, numstat: attempt.numstat };
       edited = true;
+      revised = false;
       needsRender = true;
       continue;
     }
     if (answer === "r") {
       regenerations++;
       edited = false; // a fresh draft is the model's, not the edited one
+      revised = false;
+
       // Loader around the model call: spinner on TTY, silent off-TTY. It
       // fully erases itself before the next presentDraft frame is written,
       // so the framed stage layout is never garbled by loader output.
@@ -324,13 +332,80 @@ export async function interactLoop(first: DraftAttempt, deps: LoopDeps): Promise
       needsRender = true;
       continue;
     }
+    if (answer === "p") {
+      if (!deps.revise) {
+        deps.stdout.write("\ncommitshi: revise is not available\n");
+        needsRender = true;
+        continue;
+      }
+      deps.stdout.write("\nRevision instruction: ");
+      let instruction = "";
+      let cancelled = false;
+      // Read a one-liner in raw mode, echoing as we go
+      while (true) {
+        const raw = await ask();
+        if (raw === null) {
+          close();
+          return { ok: false, exitCode: 1, message: "commitshi: input closed — nothing accepted, no commit" };
+        }
+        if (raw === "\x03") {
+          close();
+          process.kill(process.pid, "SIGINT");
+          return { ok: false, exitCode: 130, message: "commitshi: interrupted — nothing accepted, no commit" };
+        }
+        if (raw === "\x1b") {
+          // Escape cancels revision, erase the revision line and return to prompt line
+          deps.stdout.write("\r\x1b[K\x1b[1A");
+          cancelled = true;
+          break;
+        }
+        if (raw === "\r" || raw === "\n") {
+          deps.stdout.write("\n");
+          break;
+        }
+        if (raw === "\x7f" || raw === "\b") {
+          if (instruction.length > 0) {
+            instruction = instruction.slice(0, -1);
+            deps.stdout.write("\b \b");
+          }
+          continue;
+        }
+        instruction += raw;
+        deps.stdout.write(raw);
+      }
+      if (cancelled) {
+        // No draft change, avoid full re-render to prevent flicker
+        needsRender = false;
+        continue;
+      }
+      if (instruction.trim() === "") {
+        // Empty instruction: erase the revision line and return to prompt line
+        deps.stdout.write("\r\x1b[K\x1b[1A");
+        needsRender = false;
+        continue;
+      }
+      edited = false;
+      const loader = (deps.startLoader ?? ((label, write, isTTY) => startLoader(label, write, isTTY)))(
+        `revising draft…`,
+        (s) => deps.stdout.write(s),
+        stdoutIsTTY,
+      );
+      try {
+        attempt = await deps.revise(draft, instruction);
+      } finally {
+        loader.stop();
+      }
+      revised = true;
+      needsRender = true;
+      continue;
+    }
     if (answer === "q" || answer === "quit") {
       close();
       return { ok: true, action: "cancel", draft, regenerations };
     }
     // Unknown key: name it once to avoid terminal pollution
     if (!unknownNotified) {
-      deps.stdout.write("\ncommitshi: unknown key — press Enter to accept, i to edit here, e to edit in editor, r to regenerate, q to quit\n");
+      deps.stdout.write("\ncommitshi: unknown key — press Enter to accept, i to edit here, e to edit in editor, r to regenerate, p to revise, q to quit\n");
       unknownNotified = true;
     }
   }

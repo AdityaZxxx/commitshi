@@ -125,6 +125,7 @@ export type PresentOpts = Readonly<{
   draft: string;
   draftNumber: number; // 1-based; edits do not increment it
   edited: boolean; // draft came back from $EDITOR this frame
+  revised: boolean; // draft came back from revise this frame
   truncated: boolean; // staged-diff digest was over budget
   numstat: readonly NumstatEntry[];
   prompt: string; // the live prompt string (kept verbatim; 12's territory)
@@ -161,9 +162,13 @@ export function presentDraft(stdout: Pick<NodeJS.WriteStream, "write">, opts: Pr
     out.push(muted(colors, `Files staged  ${count} file${count === 1 ? '' : 's'}`));
   }
 
-  // (edited) badge keeps the same draft number — edits don't increment it;
+  // (edited) / (revised) badge keeps the same draft number — edits and revisions don't increment it;
   // only `r` does.
-  out.push(`\nDRAFT ${opts.draftNumber}${opts.edited ? " (edited)" : ""}`);
+  const badges: string[] = [];
+  if (opts.edited) badges.push("edited");
+  if (opts.revised) badges.push("revised");
+  const badge = badges.length ? ` (${badges.join(", ")})` : "";
+  out.push(`\nDRAFT ${opts.draftNumber}${badge}`);
 
   // Subject (first non-empty line) takes the accent; body stays default prose.
   out.push(...draftRows(opts.draft, colors));

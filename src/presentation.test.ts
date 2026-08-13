@@ -56,6 +56,7 @@ describe("presentDraft — width propagation", () => {
       draft: "feat: x",
       draftNumber: 1,
       edited: false,
+      revised: false,
       truncated: false,
       numstat: [{ path: "a/very/long/path/that/will/not/fit.ts", added: 3, removed: 1, binary: false }],
       prompt: "  [Enter] accept › ",

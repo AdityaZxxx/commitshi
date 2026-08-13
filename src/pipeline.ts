@@ -235,3 +235,125 @@ export async function generateDraft(deps: PipelineDeps): Promise<DraftResult> {
     model,
   };
 }
+
+/**
+ * Revises an existing draft using a user-provided instruction.
+ * The model sees the compacted diff, the current draft, and the revision instruction.
+ * The output is still subject to the strict token-fill contract.
+ */
+export async function reviseDraft(deps: PipelineDeps, currentDraft: string, instruction: string): Promise<DraftResult> {
+  const diff = await deps.stagedDiff();
+  const compacted = compact(diff);
+
+  const flags = deps.flags ?? {};
+  const bundle = await deps.resolveBundle(flags as Partial<Record<string, string | undefined>>);
+
+  const providerR = bundle.provider;
+  if (providerR !== undefined && providerR.value !== "" && providerR.value.toLowerCase() !== "openai") {
+    return {
+      ok: false,
+      exitCode: 2,
+      message: `commitshi: provider "${providerR.value}" is not supported — commitshi currently understands only the OpenAI-compatible adapter (OpenAI, Groq, DeepSeek, Ollama at any baseUrl).`,
+    };
+  }
+
+  const apiKeyR = await deps.resolveApiKey("openai");
+  const pipeEnv = deps.env ?? process.env;
+  const baseUrl = bundle.baseUrl?.value ?? pipeEnv.OPENAI_BASE_URL ?? DEFAULT_BASE_URL;
+  const model = bundle.model?.value ?? DEFAULT_MODEL;
+  const templateRaw = bundle.template?.value?.trim() ?? "";
+
+  const isLocal = isLocalBaseUrl(baseUrl);
+  const envKey = pipeEnv.OPENAI_API_KEY;
+  const hasKey =
+    (apiKeyR !== null && apiKeyR.value !== "") || (envKey !== undefined && envKey !== "");
+  if (!isLocal && !hasKey) {
+    return { ok: false, exitCode: 1, kind: "missing-key", message: missingKeyMessage("openai") };
+  }
+  const apiKey = isLocal ? undefined : apiKeyR?.value;
+
+  const template = templateRaw === "" ? DEFAULT_CONVENTIONAL_TEMPLATE : templateRaw;
+  const templateError = checkTemplate(template);
+  if (templateError !== null) {
+    return { ok: false, exitCode: 2, message: `commitshi: template is invalid — ${templateError}` };
+  }
+
+  const system = buildPrompt(template);
+
+  const extras: string[] = [];
+
+  if (deps.styleHistory !== undefined) {
+    let subjects: readonly string[] = [];
+    try {
+      subjects = await deps.styleHistory();
+    } catch {
+      subjects = [];
+    }
+    if (subjects.length > 0) {
+      extras.push(
+        [
+          "### Style history",
+          "",
+          "Recent commit subjects from this repository, newest first:",
+          ...subjects.map((s) => `- ${s}`),
+          "Match their local conventions (type vocabulary, scope style, summary phrasing) where they agree.",
+        ].join("\n"),
+      );
+    }
+  }
+
+  const user = [
+    "### Compact diff",
+    "",
+    renderCompacted(compacted),
+    "",
+    "### Existing draft",
+    "",
+    currentDraft,
+    "",
+    "### Revision instruction",
+    "",
+    instruction.trim(),
+    "",
+    ...extras,
+    "",
+    "Revise the existing draft to follow the revision instruction while staying grounded in the compacted diff. Fill every template token.",
+  ].join("\n");
+
+  const chat = deps.chat ?? chatCompletions;
+  const result = await chat(
+    { baseUrl, apiKey },
+    {
+      model,
+      messages: [{ role: "system", content: system }, { role: "user", content: user }],
+      temperature: 0.3,
+    },
+  );
+
+  if (!result.ok) {
+    const exitCode = result.kind === "rate_limited" || result.kind === "auth" ? 3 : 1;
+    return { ok: false, exitCode, message: result.message };
+  }
+
+  const filled = strictFill(template, result.content);
+  if (!filled.ok) {
+    return {
+      ok: false,
+      exitCode: 1,
+      message: [
+        "commitshi: model output did not satisfy the template contract and was rejected — no commit draft was made",
+        "",
+        `reason: ${filled.error}`,
+      ].join("\n"),
+    };
+  }
+
+  return {
+    ok: true,
+    message: filled.message,
+    truncated: compacted.truncated,
+    numstat: compacted.numstat,
+    baseUrl,
+    model,
+  };
+}

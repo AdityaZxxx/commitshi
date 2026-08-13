@@ -218,7 +218,7 @@ describe("main", () => {
       });
       expect(code).toBe(0);
       expect(committed).toBe("feat: add a.txt");
-      expect(out.text()).toContain("committed");
+      expect(out.text()).toContain("Committed as #");
       expect(err.text()).not.toContain("canceled");
     });
 

@@ -258,7 +258,7 @@ describe("commit stage (ticket 08, sandboxed repos with real hooks)", () => {
       });
 
       expect(code).toBe(0);
-      expect(out.text()).toContain("commitshi: committed");
+      expect(out.text()).toContain("Committed as #");
       const body = await gitLog(workdir, "-1", "--format=%B");
       expect(body).toContain("feat: add a.txt");
       expect(body).toContain("Hook-Checked: yes"); // hooks fired on the real commit path

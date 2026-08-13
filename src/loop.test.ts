@@ -236,6 +236,8 @@ describe("interactLoop", () => {
     expect(result.ok).toBe(true);
     // The subject line is wrapped in an SGR escape; the prompt stays unwrapped.
     expect(stdout.text()).toMatch(/\x1b\[38;[^m]*mfeat\(a\): do the thing\x1b\[0m/);
-    expect(stdout.text()).not.toMatch(/\x1b\[38;[^m]*m\[Enter\]/);
+    // Prompt is muted, not accent — ensure accent color is not applied to the prompt
+    expect(stdout.text()).not.toMatch(/\x1b\[38;2;38;153;74m\[Enter\]/);
+    expect(stdout.text()).not.toMatch(/\x1b\[38;5;35m\[Enter\]/);
   });
 });

@@ -1,7 +1,7 @@
 import { parseArgs, USAGE, type CliFlags } from "./cli.ts";
 import { guardStagedChanges, recentCommitSubjects, stagedDiff } from "./git.ts";
 import { makeResolveApiKey, resolveBundle, type Deps } from "./config.ts";
-import { DEFAULT_BASE_URL, generateDraft, setRegenerateTemperatureOverride, type PipelineDeps } from "./pipeline.ts";
+import { DEFAULT_BASE_URL, generateDraft, reviseDraft, setRegenerateTemperatureOverride, type PipelineDeps } from "./pipeline.ts";
 import { interactLoop, type AskKey, type DraftAttempt } from "./loop.ts";
 import { commitAcceptedMessage, type CommitResult } from "./commit.ts";
 import { runSetup } from "./setup.ts";
@@ -179,6 +179,30 @@ export async function main(
       } finally {
         setRegenerateTemperatureOverride(null);
       }
+    },
+    revise: async (draft: string, instruction: string) => {
+      const result = await reviseDraft(
+        {
+          stagedDiff: () => stagedDiff(),
+          styleHistory: flags.style ? () => recentCommitSubjects() : undefined,
+          resolveBundle: (f) => resolveBundle(deps.config ?? {}, f),
+          resolveApiKey: makeResolveApiKey(deps.config ?? {}),
+          env: configEnv,
+          chat: deps.chat,
+          flags: {
+            model: flags.model,
+            template: flags.template,
+            provider: flags.provider,
+            baseUrl: flags.baseUrl,
+            instructions: flags.instructions,
+          },
+        },
+        draft,
+        instruction,
+      );
+      return result.ok
+        ? { ok: true, draft: result.message, truncated: result.truncated, numstat: result.numstat }
+        : { ok: false, exitCode: result.exitCode, message: result.message };
     },
   });
 
