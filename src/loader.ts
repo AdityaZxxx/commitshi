@@ -65,7 +65,7 @@ export function startLoader(
   const paint = () => {
     const secs = Math.floor((now() - started) / 1000);
     const spinner = FRAMES[frame++ % FRAMES.length];
-    write(`${ERASE_LINE}  ${spinner} ${label} ${secs}s`);
+    write(`${ERASE_LINE}${spinner} ${label} ${secs}s`);
   };
 
   write(HIDE_CURSOR);

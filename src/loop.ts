@@ -62,7 +62,7 @@ export type LoopResult =
  * `i` splits into the EDIT floor below the rows; the DRAFT section keeps the
  * default English names for the commands, single-bucket and consultable).
  */
-const PROMPT = "  [Enter] accept  ·  [i] edit inline  ·  [e] $EDITOR  ·  [r] regenerate  ·  [q] quit › ";
+const PROMPT = "[Enter] accept  ·  [i] edit here  ·  [e] edit in editor  ·  [r] regenerate  ·  [q] quit";
 
 type FileIo = { file: (path: string) => { text: () => Promise<string> } };
 
@@ -129,7 +129,7 @@ async function editDraft(
   if (editor === undefined || editor.trim() === "") {
     return {
       ok: false,
-      message: "commitshi: $EDITOR is not set — nothing accepted, no commit. Set $EDITOR to edit in your editor, or press Enter to accept or q to quit.",
+      message: "commitshi: $EDITOR is not set. Set $EDITOR in your shell, or press Enter to accept the draft or q to quit.",
     };
   }
 
@@ -139,16 +139,16 @@ async function editDraft(
     const spawn = deps.spawn ?? runEditor;
     const code = await spawn(editor, path);
     if (code !== 0) {
-      return { ok: false, message: `commitshi: editor "${editor}" exited with code ${code} — draft unchanged, nothing accepted. Fix the editor and re-run commitshi.` };
+      return { ok: false, message: `commitshi: editor "${editor}" exited with code ${code}. Fix the editor and re-run commitshi.` };
     }
     // Strip trailing newlines the editor added; the draft keeps its interior.
     const text = (await fileIo.file(path).text()).replace(/\n+$/, "");
     if (text.trim() === "") {
-      return { ok: false, message: "commitshi: editor left the draft empty — nothing accepted, no commit. Re-run commitshi to draft again." };
+      return { ok: false, message: "commitshi: editor left the draft empty. Re-run commitshi to draft again." };
     }
     return { ok: true, text };
   } catch (error) {
-    return { ok: false, message: `commitshi: could not run editor "${editor}": ${(error as Error).message} — nothing accepted. Fix $EDITOR and re-run commitshi.` };
+    return { ok: false, message: `commitshi: could not run editor "${editor}": ${(error as Error).message}. Fix $EDITOR and re-run commitshi.` };
   } finally {
     await unlink(path).catch(() => {});
   }
@@ -168,12 +168,8 @@ async function inlineEdit(
 ): Promise<{ ok: true; text: string } | { ok: false; kind: "cancelled" } | { ok: false; kind: "empty-subject"; message: string }> {
   const result = await run(draft, stdin as NodeJS.ReadStream, stdout as NodeJS.WriteStream);
   if (!result.ok) {
-    if (result.kind === "cancelled") {
-      stdout.write("commitshi: inline edit cancelled — draft unchanged\n");
-    }
     return result;
   }
-  stdout.write("commitshi: inline edit saved\n");
   return { ok: true, text: result.text };
 }
 
@@ -228,25 +224,36 @@ export async function interactLoop(first: DraftAttempt, deps: LoopDeps): Promise
     if (!injectedAsk) asker.close();
   };
 
+  let firstRender = true;
+  let needsRender = true;
+  let unknownNotified = false;
   for (;;) {
     if (!attempt.ok) {
       close();
       return { ok: false, exitCode: 1, message: attempt.message };
     }
     const draft = attempt.draft;
-    // Render the framed draft: staged-changes numstat (with (truncated) badge
-    // in the label on a truncated digest), the numbered draft (subject in
-    // accent, (edited) badge once edited), then the prompt awaiting the key.
-    presentDraft(deps.stdout, {
-      draft,
-      draftNumber: 1 + regenerations,
-      edited,
-      truncated: attempt.truncated,
-      numstat: attempt.numstat,
-      prompt: PROMPT,
-      colors,
-      columns: probe.isTTY ? probe.columns : undefined,
-    });
+    if (needsRender) {
+      // Clear only on first render to avoid flicker; subsequent re-renders overwrite in place
+      if (firstRender) {
+        deps.stdout.write("\x1b[2J\x1b[H");
+        firstRender = false;
+      }
+      // Render the framed draft: staged-changes numstat (with (truncated) badge
+      // in the label on a truncated digest), the numbered draft (subject in
+      // accent, (edited) badge once edited), then the prompt awaiting the key.
+      presentDraft(deps.stdout, {
+        draft,
+        draftNumber: 1 + regenerations,
+        edited,
+        truncated: attempt.truncated,
+        numstat: attempt.numstat,
+        prompt: PROMPT,
+        colors,
+        columns: probe.isTTY ? probe.columns : undefined,
+      });
+      needsRender = false;
+    }
     const rawAnswer = await ask();
 
     if (rawAnswer === null) {
@@ -274,6 +281,7 @@ export async function interactLoop(first: DraftAttempt, deps: LoopDeps): Promise
       }
       attempt = { ok: true, draft: editResult.text, truncated: false, numstat: attempt.numstat };
       edited = true;
+      needsRender = true;
       continue;
     }
     if (answer === "i") {
@@ -288,10 +296,13 @@ export async function interactLoop(first: DraftAttempt, deps: LoopDeps): Promise
           close();
           return { ok: false, exitCode: 1, message: editResult.message };
         }
-        continue; // cancelled: revert, no badge, re-present the decision
+        // cancelled: inline editor cleared the screen, so we must re-render the draft frame
+        needsRender = true;
+        continue;
       }
       attempt = { ok: true, draft: editResult.text, truncated: false, numstat: attempt.numstat };
       edited = true;
+      needsRender = true;
       continue;
     }
     if (answer === "r") {
@@ -310,14 +321,17 @@ export async function interactLoop(first: DraftAttempt, deps: LoopDeps): Promise
       } finally {
         loader.stop();
       }
+      needsRender = true;
       continue;
     }
     if (answer === "q" || answer === "quit") {
       close();
       return { ok: true, action: "cancel", draft, regenerations };
     }
-    // Unknown key: name it once, then a quiet re-prompt — the prompt above the
-    // frame is the loud line; this one just nudges the user back to it.
-    deps.stdout.write("commitshi: unknown key — press Enter to accept, i to edit inline, e for $EDITOR, r to regenerate, q to quit\n");
+    // Unknown key: name it once to avoid terminal pollution
+    if (!unknownNotified) {
+      deps.stdout.write("\ncommitshi: unknown key — press Enter to accept, i to edit here, e to edit in editor, r to regenerate, q to quit\n");
+      unknownNotified = true;
+    }
   }
 }

@@ -4,7 +4,7 @@
 // (muted legibility, width-aware rules and numstat).
 
 import { describe, expect, test } from "bun:test";
-import { muted, resolveColors, TRUECOLOR, divider, presentDraft, renderNumstat, rule } from "./presentation.ts";
+import { muted, resolveColors, TRUECOLOR, presentDraft, renderNumstat } from "./presentation.ts";
 
 const on = resolveColors(true);
 const off = resolveColors(false);
@@ -19,28 +19,6 @@ describe("muted — legibility", () => {
 
   test("muted is a no-op when color is disabled", () => {
     expect(muted(off, "x")).toBe("x");
-  });
-});
-
-describe("rule — width awareness", () => {
-  test("rule pads to the given width when columns is supplied", () => {
-    const line = rule("DRAFT 1", off, undefined, 30);
-    // "DRAFT 1" + space = 8 visible; pad to 30 total.
-    expect(line.length).toBe(30);
-    expect(line.startsWith("DRAFT 1 ")).toBe(true);
-  });
-
-  test("rule falls back to 50 when columns is absent", () => {
-    const line = rule("DRAFT 1", off);
-    expect(line.length).toBe(50);
-  });
-});
-
-describe("divider — the structural separator between deliverable and controls", () => {
-  test("divider emits a plain dashes-only line at the same width as the rules", () => {
-    expect(divider(off, 40).length).toBe(40);
-    expect(divider(off, 40)).toMatch(/^─+$/);
-    expect(divider(off).length).toBe(50); // fallback width
   });
 });
 

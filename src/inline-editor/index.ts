@@ -55,7 +55,7 @@ export async function run(
           const composed = composeDraft(state.draft);
           const subject = state.draft.subject.trim();
           if (!subject) {
-            resolve({ ok: false, kind: "empty-subject", message: "subject is empty — nothing to commit. Press i to edit again." });
+            resolve({ ok: false, kind: "empty-subject", message: "Subject is empty. Add a subject line, then press Ctrl+S to save." });
             return;
           }
           resolve({ ok: true, text: composed });

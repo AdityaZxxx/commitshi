@@ -16,15 +16,13 @@ export type VisualRow = {
 
 export function buildRenderModel(state: EditorState): RenderRow[] {
   const rows: RenderRow[] = [];
-  const { draft, cursor } = state;
-  const subjectPrefix = cursor.area === "subject" ? "> " : "  ";
-  rows.push({ kind: "subject", text: `${subjectPrefix}${draft.subject}` });
+  const { draft } = state;
+  rows.push({ kind: "subject", text: draft.subject });
   rows.push({ kind: "separator", text: "" });
   draft.body.forEach((line, i) => {
-    const prefix = cursor.area === "body" && cursor.row === i ? "> " : "  ";
-    rows.push({ kind: "body", logicalRow: i, text: `${prefix}${line}` });
+    rows.push({ kind: "body", logicalRow: i, text: line });
   });
-  rows.push({ kind: "footer", text: "Ctrl+S to save  Esc to cancel" });
+  rows.push({ kind: "footer", text: "Ctrl+S to save  ·  Esc to cancel" });
   return rows;
 }
 
@@ -105,12 +103,12 @@ export function buildVisualLayout(state: EditorState, columns?: number): VisualR
 
   const pushLine = (area: VisualRow["logicalArea"], logicalRow: number | undefined, text: string, active: boolean) => {
     if (!isTTY) {
-      const prefix = active ? "> " : "  ";
+      const prefix = "";
       visual.push({ logicalArea: area, logicalRow, text: prefix + text, startOffset: 0, endOffset: text.length });
       return;
     }
-    const prefixFirst = active ? "> " : "  ";
-    const prefixCont = "  ";
+    const prefixFirst = "";
+    const prefixCont = "";
     if (text.length === 0) {
       // Empty logical line still needs a visual row so Enter-created blank lines are visible
       const prefix = prefixFirst;
@@ -148,7 +146,7 @@ export function buildVisualLayout(state: EditorState, columns?: number): VisualR
   // spacer before footer
   visual.push({ logicalArea: "footer", logicalRow: undefined, text: "", startOffset: 0, endOffset: 0 });
   // footer
-  const footerText = "  [Ctrl+S] save  ·  [Esc] cancel ›";
+  const footerText = "[Ctrl+S] save  ·  [Esc] cancel";
   if (isTTY) {
     const chunks = wrapText(footerText, columns!);
     chunks.forEach((c) => {
@@ -203,7 +201,7 @@ export function cursorPosition(state: EditorState, columns?: number): { row: num
       const logicalLine = getLogicalLine(state, targetLogicalArea as "subject"|"body", targetLogicalRow);
       const before = substringByGrapheme(logicalLine, v.startOffset, cursor.col);
       const isFirstChunk = v.startOffset === 0;
-      const prefixStr = isFirstChunk && isActive ? "> " : "  ";
+      const prefixStr = "";
       let col = displayWidth(prefixStr) + displayWidth(before);
       if (columns) col = Math.min(col, columns - 1);
       return { row: i, col };
@@ -222,7 +220,7 @@ export function cursorPosition(state: EditorState, columns?: number): { row: num
     const logicalLine = getLogicalLine(state, targetLogicalArea as "subject"|"body", targetLogicalRow);
     const chunkText = substringByGrapheme(logicalLine, v.startOffset, v.endOffset);
     const isFirstChunk = v.startOffset === 0;
-    const prefixStr = isFirstChunk && isActive ? "> " : "  ";
+    const prefixStr = "";
     let col = displayWidth(prefixStr) + displayWidth(chunkText);
     if (columns) col = Math.min(col, columns - 1);
     return { row: i, col };

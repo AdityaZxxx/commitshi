@@ -5,6 +5,8 @@ import { DEFAULT_BASE_URL, generateDraft, setRegenerateTemperatureOverride, type
 import { interactLoop, type AskKey, type DraftAttempt } from "./loop.ts";
 import { commitAcceptedMessage, type CommitResult } from "./commit.ts";
 import { runSetup } from "./setup.ts";
+import { startLoader } from "./loader.ts";
+import { execSync } from "node:child_process";
 
 export type MainDeps = Readonly<{
   /** Overrides for the model call seam (tests); production uses the real adapter. */
@@ -117,7 +119,13 @@ export async function main(
   // as a draft result; main's only job is mapping the missing-key variant:
   // interactive TTY (and not --no-commit) → run the wizard, draft once more;
   // otherwise the result's message is printed and its exit code used.
-  let firstResult = await runPipeline();
+  const firstLoader = startLoader('generating draft…', (s) => stdout.write(s), stdoutIsTTY);
+  let firstResult: Awaited<ReturnType<typeof runPipeline>>;
+  try {
+    firstResult = await runPipeline();
+  } finally {
+    firstLoader.stop();
+  }
   if (!firstResult.ok && firstResult.kind === "missing-key" && !flags.noCommit && stdinIsTTY && stdoutIsTTY) {
     const code =
       deps.setup !== undefined
@@ -175,11 +183,11 @@ export async function main(
   });
 
   if (!outcome.ok) {
-    stderr.write(`${outcome.message}\n`);
+    stderr.write(`\n${outcome.message}\n`);
     return outcome.exitCode;
   }
   if (outcome.action === "cancel") {
-    stderr.write("commitshi: canceled — no commit was made\n");
+    stderr.write("\n✕ Commit canceled — no changes were committed. Run commitshi again to retry\n");
     return 0;
   }
 
@@ -190,9 +198,21 @@ export async function main(
   // success.
   const committed = await (deps.commit ?? ((message: string) => commitAcceptedMessage(message)))(outcome.draft);
   if (!committed.ok) {
-    stderr.write(`${committed.message}\n`);
+    stderr.write(`\n${committed.message}\n`);
     return committed.exitCode;
   }
-  stdout.write("commitshi: committed\n");
+
+  // Get short hash for the just-created commit
+  let shortHash = "";
+  try {
+    shortHash = execSync("git rev-parse --short HEAD", { encoding: "utf8" }).trim();
+  } catch {
+    /* ignore */
+  }
+  const subject = outcome.draft.split("\n").find(l => l.trim() !== "") ?? "";
+  stdout.write(`\nCommitted as #${shortHash}\n`);
+  if (subject) {
+    stdout.write(`${subject}\n`);
+  }
   return 0;
 }

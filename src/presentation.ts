@@ -11,14 +11,6 @@
 
 import type { NumstatEntry } from "./compaction.ts";
 
-/** Fallback rule width when the terminal width can't be probed (tests,
- *  non-TTY captures). Live runs size rules from `columns` instead. */
-const RULE_WIDTH = 50;
-
-/** Rules never grow past this, even on wide terminals — the frame should
- *  hug the git subject convention, not the monitor. */
-const RULE_MAX = 72;
-
 type Palette = Readonly<{ muted: string; accent: string; warn: string }>;
 
 // 24-bit truecolor, exact oklch→rgb per role. The leading string is the SGR
@@ -81,36 +73,7 @@ export const warn = (gate: ColorGate, s: string): string => role(gate, "warn")(s
 
 
 
-/** Dim style — inactive rows of the inline editor. A style, not a color:
- *  pairs with muted/accent; closes with the same RESET. */
-export const dim = (gate: ColorGate, s: string): string =>
-  gate.enabled ? `\x1b[2m${s}${RESET}` : s;
 
-/**
- * One section header: `─── <label> [badge] ─── ` padded to RULE_WIDTH.
- * The line is muted stage direction; the badge (if any) carries its own role
- * as a separate segment, so no ANSI escapes nest or clobber each other. Pad
- * is computed on the plain string — escape bytes never shorten the rule.
- */
-export function rule(
-  label: string,
-  colors: ColorGate,
-  badge?: Readonly<{ text: string; paint: (g: ColorGate, s: string) => string }>,
-  columns?: number,
-): string {
-  const width = Math.max(24, Math.min(RULE_MAX, columns ?? RULE_WIDTH));
-  const visible = `${label} ` + (badge ? `${badge.text} ` : "");
-  const dash = "─".repeat(Math.max(0, width - visible.length));
-  if (!colors.enabled) return `${visible}${dash}`;
-  return `${muted(colors, `${label} `)}${badge ? `${badge.paint(colors, badge.text)}${muted(colors, " ")}` : ""}${muted(colors, dash)}`;
-}
-
-/** A structural separator between the deliverable and the controls.
- *  Muted, dashes-only, same width as the rules. */
-export function divider(colors: ColorGate, columns?: number): string {
-  const width = Math.max(24, Math.min(RULE_MAX, columns ?? RULE_WIDTH));
-  return muted(colors, "─".repeat(width));
-}
 
 /**
  * The prompt wrapper is muted. The PROMPT literal itself owns the visual
@@ -126,17 +89,19 @@ function mutedPrompt(prompt: string, colors: ColorGate): string {
 /** Renders the numstat block: two-space indent, right-ish aligned by path
  *  width. When `columns` is given and the block would overflow, paths are
  *  ellipsized at the start — counts are the data, they never truncate. */
-export function renderNumstat(entries: readonly NumstatEntry[], columns?: number): string[] {
+export function renderNumstat(entries: readonly NumstatEntry[], columns?: number, colors?: ColorGate): string[] {
   if (entries.length === 0) return [];
   const render = (e: NumstatEntry, width: number) => {
-    const p = width < e.path.length ? `…${e.path.slice(-(width - 1))}` : e.path;
-    return `  ${p.padEnd(width)}   ${e.binary ? "binary" : `+${e.added} -${e.removed}`}`;
+    const p = width < e.path.length
+      ? `${e.path.slice(0, Math.max(0, Math.floor((width - 4) / 2)))}…${e.path.slice(-Math.max(0, Math.ceil((width - 4) / 2)))}`
+      : e.path;
+    return `${p.padEnd(width)}   ${e.binary ? "binary" : `+${e.added} -${e.removed}`}`;
   };
   const pathWidth = Math.max(...entries.map((e) => e.path.length));
   if (columns !== undefined) {
     // Find the widest path column that keeps every line within `columns`;
     // paths narrower than the column print in full, longer ones ellipsize
-    // at the front (the basename — the identifying part — is preserved).
+    // in the middle to preserve leading namespace and basename.
     let width = pathWidth;
     while (width > 8 && entries.some((e) => render(e, width).length > columns)) width--;
     if (width < pathWidth) return entries.map((e) => render(e, width));
@@ -153,7 +118,7 @@ export function draftRows(draft: string, colors: ColorGate): string[] {
   const lines = draft.split("\n");
   const subjectIdx = lines.findIndex((l) => l.trim() !== "");
   if (subjectIdx === -1) return lines;
-  return lines.map((l, i) => (i === subjectIdx ? `  ${accent(colors, l)}` : l === "" ? "" : `  ${l}`));
+  return lines.map((l, i) => (i === subjectIdx ? `${accent(colors, l)}` : l === "" ? "" : `${l}`));
 }
 
 export type PresentOpts = Readonly<{
@@ -184,29 +149,24 @@ export function presentDraft(stdout: Pick<NodeJS.WriteStream, "write">, opts: Pr
 
   // (truncated) appears once per run — the badge is part of the label, not a
   // second line — so a re-presentation after a regeneration doesn't re-print it.
-  out.push(
-    `\n${rule("STAGED CHANGES", colors, opts.truncated ? { text: "(truncated)", paint: warn } : undefined, opts.columns)}`,
-  );
-  out.push(...renderNumstat(opts.numstat, opts.columns));
+  out.push(`\nSTAGED CHANGES${opts.truncated ? " (truncated)" : ""}`);
+  const numstatLines = renderNumstat(opts.numstat, opts.columns);
+  out.push(...numstatLines.map(l => {
+    if (!colors.enabled) return l;
+    return l.replace(/(\+\d+)/g, (_, m) => accent(colors, m)).replace(/(-\d+)/g, (_, m) => warn(colors, m));
+  }));
+  // Resolved-state summary: what target the CLI found
+  if (opts.numstat.length > 0) {
+    const count = opts.numstat.length;
+    out.push(muted(colors, `Files staged  ${count} file${count === 1 ? '' : 's'}`));
+  }
 
   // (edited) badge keeps the same draft number — edits don't increment it;
   // only `r` does.
-  out.push(
-    `\n${rule(`DRAFT ${opts.draftNumber}`, colors, opts.edited ? { text: "(edited)", paint: accent } : undefined, opts.columns)}`,
-  );
+  out.push(`\nDRAFT ${opts.draftNumber}${opts.edited ? " (edited)" : ""}`);
 
   // Subject (first non-empty line) takes the accent; body stays default prose.
   out.push(...draftRows(opts.draft, colors));
-  out.push(`\n${divider(colors, opts.columns)}`);
-  stdout.write(`${out.join("\n")}\n${mutedPrompt(opts.prompt, colors)}`);
-}
-
-/**
- * The "model call in flight" line for a regeneration. On a TTY it overwrites
- * the prompt line in place (`\r`); off-TTY it degrades to a fresh prefixed
- * line so captured output stays linear and greppable. Draft number carries so
- * the user sees which generation is coming.
- */
-export function regenerating(draftNumber: number, isTTY: boolean): string {
-  return isTTY ? `\r  regenerating — draft ${draftNumber} ›\n` : `commitshi: regenerating — draft ${draftNumber}\n`;
+  // divider removed for UI experiment
+  stdout.write(`${out.join("\n")}\n\n${mutedPrompt(opts.prompt, colors)}`);
 }
