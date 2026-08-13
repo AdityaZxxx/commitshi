@@ -8,15 +8,23 @@ export type InlineResult =
   | { ok: false; kind: "cancelled" }
   | { ok: false; kind: "empty-subject"; message: string };
 
-export async function runInlineEditor(
+export async function run(
   initialDraft: string,
   stdin: NodeJS.ReadStream,
   stdout: NodeJS.WriteStream,
 ): Promise<InlineResult> {
+  readline.emitKeypressEvents(stdin);
+  const rawSupported = stdin.isTTY && typeof (stdin as any).setRawMode === "function";
+  if (!rawSupported) {
+    throw new Error("inline editor requires a TTY with setRawMode");
+  }
+  let rawEnabled = false;
+
   try {
-    // setup
-    readline.emitKeypressEvents(stdin);
-    
+    (stdin as any).setRawMode(true);
+    rawEnabled = true;
+    stdin.resume();
+
     let state = initialState(parseDraft(initialDraft));
     let active = true;
 
@@ -30,7 +38,7 @@ export async function runInlineEditor(
     };
     render();
 
-    return await new Promise<InlineResult>((resolve) => {
+    const result = await new Promise<InlineResult>((resolve) => {
       const onKey = (_str: string, key: any) => {
         if (!active) return;
         const k = normalizeKeypress(_str, key);
@@ -54,15 +62,33 @@ export async function runInlineEditor(
         }
       };
 
+      const onEnd = () => {
+        if (!active) return;
+        active = false;
+        cleanup();
+        resolve({ ok: false, kind: "cancelled" });
+      };
+
       const cleanup = () => {
         stdin.removeListener("keypress", onKey);
-        // Clear the inline editor frame so the loop's draft view renders cleanly
+        stdin.removeListener("end", onEnd);
+        stdin.removeListener("close", onEnd);
         stdout.write(clearScreen());
       };
 
       stdin.on("keypress", onKey);
+      stdin.once("end", onEnd);
+      stdin.once("close", onEnd);
     });
+
+    return result;
   } finally {
-    // no-op
+    // Cleanup order: listeners removed in Promise cleanup, then clear screen, then restore raw mode
+    try { stdout.write(clearScreen()); } catch {}
+    if (rawEnabled) {
+      try { (stdin as any).setRawMode(false); } catch {}
+    }
   }
 }
+
+

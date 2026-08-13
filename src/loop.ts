@@ -18,7 +18,7 @@ import { readFile, unlink, writeFile } from "node:fs/promises";
 import { spawn as nodeSpawn } from "node:child_process";
 import { presentDraft, resolveColors, shouldEmitColor, type ColorGate } from "./presentation.ts";
 import { startLoader } from "./loader.ts";
-import { runInlineEditor } from "./inline-editor/index.ts";
+import { run } from "./inline-editor/index.ts";
 import type { NumstatEntry } from "./compaction.ts";
 
 /** One raw keypress chunk from the user: the bytes as typed, unnormalized; null on EOF. */
@@ -166,7 +166,7 @@ async function inlineEdit(
   _colors: ColorGate,
   _columns: number | undefined,
 ): Promise<{ ok: true; text: string } | { ok: false; kind: "cancelled" } | { ok: false; kind: "empty-subject"; message: string }> {
-  const result = await runInlineEditor(draft, stdin as NodeJS.ReadStream, stdout as NodeJS.WriteStream);
+  const result = await run(draft, stdin as NodeJS.ReadStream, stdout as NodeJS.WriteStream);
   if (!result.ok) {
     if (result.kind === "cancelled") {
       stdout.write("commitshi: inline edit cancelled — draft unchanged\n");
