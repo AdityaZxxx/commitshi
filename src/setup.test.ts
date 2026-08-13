@@ -392,30 +392,38 @@ describe("auto-trigger (tickets 11/14): missing-key draft result → wizard → 
 
   test("auto-trigger never fires when stdin is piped, even with an unusable bundle", async () => {
     const { configPath } = await sandbox();
-    const out = capture();
-    const err = capture();
-    let opened = 0;
-    let chatCalls = 0;
-    const code = await main(["--no-commit"], out.stream, err.stream, {
-      chat: async () => {
-        chatCalls++;
-        return { ok: true as const, content: "type: feat\nscope: -\nsummary: x\nbody: -" };
-      },
-      config: { configFilePath: configPath, env: { OPENAI_API_KEY: "sk-ci" }, gitConfigGet: async () => null },
-      stdinIsTTY: false,
-      stdoutIsTTY: true,
-      setup: async () => {
-        opened++;
-        return { exitCode: 0 };
-      },
-    });
-    expect(opened).toBe(0);
-    // No wizard, no silent proceed: the run stops non-zero at the guard
-    // boundary (repo-dependent wording) before any model call — the
-    // missing-key result never routes to the wizard off a TTY.
-    expect(code).toBe(1);
-    expect(chatCalls).toBe(0);
-    expect(err.text()).toMatch(/nothing staged|not a git repository/);
+    const workdir = realpathSync(await mkdtemp(join(tmpdir(), "commitshi-no-repo-")));
+    const previousCwd = process.cwd();
+    process.chdir(workdir);
+    try {
+      const out = capture();
+      const err = capture();
+      let opened = 0;
+      let chatCalls = 0;
+      const code = await main(["--no-commit"], out.stream, err.stream, {
+        chat: async () => {
+          chatCalls++;
+          return { ok: true as const, content: "type: feat\nscope: -\nsummary: x\nbody: -" };
+        },
+        config: { configFilePath: configPath, env: { OPENAI_API_KEY: "sk-ci" }, gitConfigGet: async () => null },
+        stdinIsTTY: false,
+        stdoutIsTTY: true,
+        setup: async () => {
+          opened++;
+          return { exitCode: 0 };
+        },
+      });
+      expect(opened).toBe(0);
+      // No wizard, no silent proceed: the run stops non-zero at the guard
+      // boundary (repo-dependent wording) before any model call — the
+      // missing-key result never routes to the wizard off a TTY.
+      expect(code).toBe(1);
+      expect(chatCalls).toBe(0);
+      expect(err.text()).toMatch(/nothing staged|not a git repository/);
+    } finally {
+      process.chdir(previousCwd);
+      await rm(workdir, { recursive: true, force: true });
+    }
   });
 });
 

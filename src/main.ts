@@ -119,7 +119,8 @@ export async function main(
   // as a draft result; main's only job is mapping the missing-key variant:
   // interactive TTY (and not --no-commit) → run the wizard, draft once more;
   // otherwise the result's message is printed and its exit code used.
-  const firstLoader = startLoader('generating draft…', (s) => stdout.write(s), stdoutIsTTY);
+  const loaderStream = flags.noCommit ? stderr : stdout;
+  const firstLoader = startLoader('generating draft…', (s) => loaderStream.write(s), stdoutIsTTY);
   let firstResult: Awaited<ReturnType<typeof runPipeline>>;
   try {
     firstResult = await runPipeline();
