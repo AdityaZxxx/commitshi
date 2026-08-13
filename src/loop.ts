@@ -16,7 +16,9 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { readFile, unlink, writeFile } from "node:fs/promises";
 import { spawn as nodeSpawn } from "node:child_process";
-import { presentDraft, regenerating, resolveColors, shouldEmitColor } from "./presentation.ts";
+import { presentDraft, resolveColors, shouldEmitColor, type ColorGate } from "./presentation.ts";
+import { startLoader } from "./loader.ts";
+import { runInlineEditor } from "./inline-editor/index.ts";
 import type { NumstatEntry } from "./compaction.ts";
 
 /** One raw keypress chunk from the user: the bytes as typed, unnormalized; null on EOF. */
@@ -39,6 +41,9 @@ export type LoopDeps = Readonly<{
   colorEnabled?: boolean;
   /** Produces a fresh draft for the same staged diff; failure ends the loop loud. */
   regenerate: () => Promise<DraftAttempt>;
+  /** Loader seam (tests): called around await regenerate(). Production shows
+   *  the spinner; tests may inject a no-op. */
+  startLoader?: (label: string, write: (s: string) => unknown, isTTY: boolean) => { stop: () => void };
 }>;
 
 /** One draft under consideration, or the loud failure to produce one. */
@@ -51,7 +56,13 @@ export type LoopResult =
   | Readonly<{ ok: true; action: "cancel"; draft: string; regenerations: number }>
   | Readonly<{ ok: false; exitCode: number; message: string }>;
 
-const PROMPT = "  [Enter] accept · [i] edit · [e] $EDITOR · [r] regenerate · [q] quit › ";
+/**
+ * The decision prompt, rendered once per frame by presentDraft (the frame's
+ * own source of truth about editing modes is one rule away from the docs:
+ * `i` splits into the EDIT floor below the rows; the DRAFT section keeps the
+ * default English names for the commands, single-bucket and consultable).
+ */
+const PROMPT = "  [Enter] accept  ·  [i] edit inline  ·  [e] $EDITOR  ·  [r] regenerate  ·  [q] quit › ";
 
 type FileIo = { file: (path: string) => { text: () => Promise<string> } };
 
@@ -118,7 +129,7 @@ async function editDraft(
   if (editor === undefined || editor.trim() === "") {
     return {
       ok: false,
-      message: "commitshi: $EDITOR is not set — set it to edit the draft, or press Enter to accept / q to quit",
+      message: "commitshi: $EDITOR is not set — nothing accepted, no commit. Set $EDITOR to edit in your editor, or press Enter to accept or q to quit.",
     };
   }
 
@@ -128,109 +139,42 @@ async function editDraft(
     const spawn = deps.spawn ?? runEditor;
     const code = await spawn(editor, path);
     if (code !== 0) {
-      return { ok: false, message: `commitshi: editor "${editor}" exited with code ${code} — draft unchanged, nothing accepted` };
+      return { ok: false, message: `commitshi: editor "${editor}" exited with code ${code} — draft unchanged, nothing accepted. Fix the editor and re-run commitshi.` };
     }
     // Strip trailing newlines the editor added; the draft keeps its interior.
     const text = (await fileIo.file(path).text()).replace(/\n+$/, "");
     if (text.trim() === "") {
-      return { ok: false, message: "commitshi: editor left the draft empty — nothing accepted, no commit" };
+      return { ok: false, message: "commitshi: editor left the draft empty — nothing accepted, no commit. Re-run commitshi to draft again." };
     }
     return { ok: true, text };
   } catch (error) {
-    return { ok: false, message: `commitshi: could not run editor "${editor}": ${(error as Error).message} — nothing accepted` };
+    return { ok: false, message: `commitshi: could not run editor "${editor}": ${(error as Error).message} — nothing accepted. Fix $EDITOR and re-run commitshi.` };
   } finally {
     await unlink(path).catch(() => {});
   }
 }
 
-/** The outcome of an inline edit of the current draft. */
-type InlineEditResult =
-  | Readonly<{ ok: true; text: string }>
-  | Readonly<{ ok: false; kind: "cancelled" }>
-  | Readonly<{ ok: false; kind: "empty-subject"; message: string }>;
-
-// Readline control chars (DEL, BS, ESC, etc.) named once so the inline-edit
-// branches read as a control-character → action map, not a string table.
-const CTRL_W = "\x17", CTRL_U = "\x15", BACKSPACE = "\x7f", ESC = "\x1b", CTRL_C = "\x03";
-
 /**
- * Edits the draft in one pre-filled line, in the style of `@clack/prompts`'
- * `text({ initialValue })`: the whole draft is the initial value, the user
- * edits it as one line, and a single Enter commits and returns. There is no
- * double-Enter, no per-line walk — the opencommit pattern. If the draft has a
- * body the newline is shown as `\n` inside the line; most drafts are one line.
+ * Inline edit of the draft using the zero-dep state machine editor.
  */
-async function inlineEdit(draft: string, ask: AskKey, stdout: Pick<NodeJS.WriteStream, "write">): Promise<InlineEditResult> {
-  stdout.write("commitshi: editing in place — Enter saves; Esc or Ctrl-C cancels\n");
-
-  // The whole draft flattened to one line; a body shows its \n visibly.
-  let text = draft.replace(/\n/g, "\\n");
-  let aborted = false;
-  let committed = false;
-  // Echo-driven in-place edit: printable characters echo as typed, Backspace
-  // erases the character just written, and only wholesale rewrites (Ctrl-U,
-  // Ctrl-W) redraw. There is no `\r` mid-typing — the cursor's position IS
-  // the state, so a redraw only happens when the screen no longer matches it.
-  const rewrite = () => {
-    stdout.write(`\r\x1b[K> ${text}`);
-  };
-  const erase = (n: number) => {
-    for (let i = 0; i < n; i++) stdout.write("\b \b");
-  };
-  stdout.write(`> ${text}`);
-  while (!aborted && !committed) {
-    const key = await ask();
-    if (key === null || key === ESC || key === CTRL_C) {
-      aborted = true;
-      break;
+async function inlineEdit(
+  draft: string,
+  _ask: AskKey,
+  _pushback: (s: string) => void,
+  stdin: NodeJS.ReadStream,
+  stdout: Pick<NodeJS.WriteStream, "write">,
+  _colors: ColorGate,
+  _columns: number | undefined,
+): Promise<{ ok: true; text: string } | { ok: false; kind: "cancelled" } | { ok: false; kind: "empty-subject"; message: string }> {
+  const result = await runInlineEditor(draft, stdin as NodeJS.ReadStream, stdout as NodeJS.WriteStream);
+  if (!result.ok) {
+    if (result.kind === "cancelled") {
+      stdout.write("commitshi: inline edit cancelled — draft unchanged\n");
     }
-    if (key === "\r" || key === "\n") {
-      committed = true;
-      stdout.write("\n");
-      break;
-    }
-    if (key === BACKSPACE || key === "\b") {
-      if (text.length > 0) {
-        text = text.slice(0, -1);
-        erase(1);
-      }
-      continue;
-    }
-    if (key === CTRL_U) {
-      text = "";
-      rewrite();
-      continue;
-    }
-    if (key === CTRL_W) {
-      const kept = text.replace(/\s*\S+\s*$/, "");
-      const removed = text.length - kept.length;
-      text = kept;
-      erase(removed);
-      continue;
-    }
-    text += key;
-    stdout.write(key);
+    return result;
   }
-
-  if (aborted) {
-    stdout.write("\r\x1b[Kcommitshi: inline edit cancelled — draft unchanged\n");
-    return { ok: false, kind: "cancelled" };
-  }
-
-  // The user's text is sovereign except for one rule: the subject must be
-  // non-empty. A body was flattened to `\\n` on screen; turn it back into a
-  // real newline before saving. The one check: the first line is the subject.
-  const restored = text.replace(/\\n/g, "\n");
-  const subject = restored.split("\n")[0] ?? "";
-  if (subject.trim() === "") {
-    return {
-      ok: false,
-      kind: "empty-subject",
-      message: "commitshi: inline edit left the subject empty — nothing accepted, no commit; draft reverted",
-    };
-  }
-  stdout.write("\r\x1b[Kcommitshi: inline edit saved\n");
-  return { ok: true, text: restored };
+  stdout.write("commitshi: inline edit saved\n");
+  return { ok: true, text: result.text };
 }
 
 /**
@@ -270,7 +214,16 @@ export async function interactLoop(first: DraftAttempt, deps: LoopDeps): Promise
 
   const injectedAsk = deps.ask !== undefined;
   const asker = injectedAsk ? { ask: deps.ask, close: () => {} } : makeKeyAsker(deps.stdin);
-  const ask = asker.ask;
+  // A pushback buffer shared with inlineEdit: the editor can return a
+  // look-ahead input (read during escape reassembly) back to the loop.
+  let pushedBack: string | null = null;
+  const ask = injectedAsk
+    ? async (): Promise<string | null> => {
+        if (pushedBack !== null) { const v = pushedBack; pushedBack = null; return v; }
+        return asker.ask();
+      }
+    : asker.ask;
+  const pushback = (s: string) => { pushedBack = s; };
   const close = () => {
     if (!injectedAsk) asker.close();
   };
@@ -292,6 +245,7 @@ export async function interactLoop(first: DraftAttempt, deps: LoopDeps): Promise
       numstat: attempt.numstat,
       prompt: PROMPT,
       colors,
+      columns: probe.isTTY ? probe.columns : undefined,
     });
     const rawAnswer = await ask();
 
@@ -323,7 +277,12 @@ export async function interactLoop(first: DraftAttempt, deps: LoopDeps): Promise
       continue;
     }
     if (answer === "i") {
-      const editResult = await inlineEdit(draft, ask, deps.stdout);
+      const editResult = await inlineEdit(draft, ask, pushback, deps.stdin, deps.stdout, colors, probe.isTTY ? probe.columns : undefined);
+      // readMultiline pauses raw mode and stdin; restore for the loop.
+      if (!injectedAsk) {
+        (deps.stdin as any).setRawMode?.(true);
+        deps.stdin.resume();
+      }
       if (!editResult.ok) {
         if (editResult.kind === "empty-subject") {
           close();
@@ -338,8 +297,19 @@ export async function interactLoop(first: DraftAttempt, deps: LoopDeps): Promise
     if (answer === "r") {
       regenerations++;
       edited = false; // a fresh draft is the model's, not the edited one
-      deps.stdout.write(regenerating(1 + regenerations, stdoutIsTTY));
-      attempt = await deps.regenerate();
+      // Loader around the model call: spinner on TTY, silent off-TTY. It
+      // fully erases itself before the next presentDraft frame is written,
+      // so the framed stage layout is never garbled by loader output.
+      const loader = (deps.startLoader ?? ((label, write, isTTY) => startLoader(label, write, isTTY)))(
+        `regenerating — draft ${1 + regenerations}`,
+        (s) => deps.stdout.write(s),
+        stdoutIsTTY,
+      );
+      try {
+        attempt = await deps.regenerate();
+      } finally {
+        loader.stop();
+      }
       continue;
     }
     if (answer === "q" || answer === "quit") {

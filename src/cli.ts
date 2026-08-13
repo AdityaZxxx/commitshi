@@ -28,7 +28,7 @@ ${flagLine("--setup", "Run the setup wizard and exit")}
 ${flagLine("--no-commit", "Print the draft and exit without committing")}
 ${flagLine("--base-url <url>", "Override the API endpoint for this run")}
 ${flagLine("--instructions \"<text>\"", "Steer the model for this run; outranks the template")}
-${flagLine("--style", "Add the last ~8 commit subjects to the prompt (opt-in; history is never read otherwise)")}
+${flagLine("--style", "Add last ~8 commit subjects (opt-in; otherwise history is never read)")}
 ${flagLine("--template \"<string>\"", "Override the commit template for this run")}
 ${flagLine("--provider <name>", "Override the provider for this run")}
 ${flagLine("--model <name>", "Override the model for this run")}

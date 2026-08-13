@@ -29,7 +29,6 @@ The line being edited is drawn *below* the framed draft — one `> `-prefixed li
 
 ## Non-goals
 
-- No multi-line editing, no per-line walking, no double-Enter — the research in `.scratch/product-research/inline-edit-ux.md` settled this. Multi-line editing in a terminal accumulates bug reports forever and adds nothing over `$EDITOR` for the rare body-heavy case.
 - No re-validation or shape hints ("that doesn't look like a conventional commit") — the user is in charge.
 - No persistence: the edited text lives for the duration of the loop. If the user then presses `r`, the edited text is discarded and a fresh draft replaces it. The `(edited)` badge drops.
 
@@ -41,4 +40,4 @@ The line being edited is drawn *below* the framed draft — one `> `-prefixed li
 
 ## Where it lives
 
-`src/loop.ts` gains an `i` branch. The edit is a one-shot readline over the same `ask` seam that reads single keypresses for the decision prompt — the seam reads single keypresses, `inlineEdit` consumes them until Enter or cancel.
+`src/loop.ts` gains an `i` branch that hands the DRAFT rows to `src/inline-editor.ts` — a zero-dep row editor over the same raw-mode `ask` seam that reads the decision prompt. On save the loop writes the repainted rows back into the frame; on cancel the frame's own rows are restored byte-for-byte (via `presentation.draftRows`) and the loop re-presents the decision.

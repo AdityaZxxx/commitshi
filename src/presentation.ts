@@ -11,22 +11,30 @@
 
 import type { NumstatEntry } from "./compaction.ts";
 
-/** Width the section label rules pad out to. Fixed; no $COLUMNS reads. */
+/** Fallback rule width when the terminal width can't be probed (tests,
+ *  non-TTY captures). Live runs size rules from `columns` instead. */
 const RULE_WIDTH = 50;
+
+/** Rules never grow past this, even on wide terminals — the frame should
+ *  hug the git subject convention, not the monitor. */
+const RULE_MAX = 72;
 
 type Palette = Readonly<{ muted: string; accent: string; warn: string }>;
 
 // 24-bit truecolor, exact oklch→rgb per role. The leading string is the SGR
 // opener; "\x1b[0m" always closes a span.
-const TRUECOLOR: Palette = {
-  muted: "\x1b[38;2;113;124;128m", // oklch(0.5 0.01 250)
+export const TRUECOLOR: Palette = {
+  // oklch(0.58 0.01 250) — lifted from 0.5 because muted carries the key
+  // prompt affordances (user-facing controls, not decoration); ~4.6:1 on
+  // dark terminals, still recedes on light.
+  muted: "\x1b[38;2;146;157;161m",
   accent: "\x1b[38;2;38;153;74m", // oklch(0.55 0.13 150)
   warn: "\x1b[38;2;164;116;28m", // oklch(0.6 0.13 70)
 };
-// ANSI-256 nearest cube matches (240 / 35 / 178→214). Used when the terminal
+// ANSI-256 nearest cube matches (245 / 35 / 178→214). Used when the terminal
 // reports a color depth below 24-bit.
 const ANSI256: Palette = {
-  muted: "\x1b[38;5;240m",
+  muted: "\x1b[38;5;245m",
   accent: "\x1b[38;5;35m",
   warn: "\x1b[38;5;214m",
 };
@@ -73,22 +81,35 @@ export const warn = (gate: ColorGate, s: string): string => role(gate, "warn")(s
 
 
 
+/** Dim style — inactive rows of the inline editor. A style, not a color:
+ *  pairs with muted/accent; closes with the same RESET. */
+export const dim = (gate: ColorGate, s: string): string =>
+  gate.enabled ? `\x1b[2m${s}${RESET}` : s;
+
 /**
  * One section header: `─── <label> [badge] ─── ` padded to RULE_WIDTH.
  * The line is muted stage direction; the badge (if any) carries its own role
  * as a separate segment, so no ANSI escapes nest or clobber each other. Pad
  * is computed on the plain string — escape bytes never shorten the rule.
  */
-function rule(
+export function rule(
   label: string,
   colors: ColorGate,
   badge?: Readonly<{ text: string; paint: (g: ColorGate, s: string) => string }>,
+  columns?: number,
 ): string {
-  const head = `─── ${label} `;
-  const visible = head + (badge ? `${badge.text} ` : "");
-  const dash = "─".repeat(Math.max(0, RULE_WIDTH - visible.length));
+  const width = Math.max(24, Math.min(RULE_MAX, columns ?? RULE_WIDTH));
+  const visible = `${label} ` + (badge ? `${badge.text} ` : "");
+  const dash = "─".repeat(Math.max(0, width - visible.length));
   if (!colors.enabled) return `${visible}${dash}`;
-  return `${muted(colors, head)}${badge ? `${badge.paint(colors, badge.text)}${muted(colors, " ")}` : ""}${muted(colors, dash)}`;
+  return `${muted(colors, `${label} `)}${badge ? `${badge.paint(colors, badge.text)}${muted(colors, " ")}` : ""}${muted(colors, dash)}`;
+}
+
+/** A structural separator between the deliverable and the controls.
+ *  Muted, dashes-only, same width as the rules. */
+export function divider(colors: ColorGate, columns?: number): string {
+  const width = Math.max(24, Math.min(RULE_MAX, columns ?? RULE_WIDTH));
+  return muted(colors, "─".repeat(width));
 }
 
 /**
@@ -102,14 +123,37 @@ function mutedPrompt(prompt: string, colors: ColorGate): string {
   return muted(colors, prompt);
 }
 
-/** Renders the numstat block: two-space indent, right-ish aligned by path width. */
-function renderNumstat(entries: readonly NumstatEntry[]): string[] {
+/** Renders the numstat block: two-space indent, right-ish aligned by path
+ *  width. When `columns` is given and the block would overflow, paths are
+ *  ellipsized at the start — counts are the data, they never truncate. */
+export function renderNumstat(entries: readonly NumstatEntry[], columns?: number): string[] {
   if (entries.length === 0) return [];
+  const render = (e: NumstatEntry, width: number) => {
+    const p = width < e.path.length ? `…${e.path.slice(-(width - 1))}` : e.path;
+    return `  ${p.padEnd(width)}   ${e.binary ? "binary" : `+${e.added} -${e.removed}`}`;
+  };
   const pathWidth = Math.max(...entries.map((e) => e.path.length));
-  return entries.map((e) => {
-    const counts = e.binary ? "binary" : `+${e.added} -${e.removed}`;
-    return `  ${e.path.padEnd(pathWidth)}   ${counts}`;
-  });
+  if (columns !== undefined) {
+    // Find the widest path column that keeps every line within `columns`;
+    // paths narrower than the column print in full, longer ones ellipsize
+    // at the front (the basename — the identifying part — is preserved).
+    let width = pathWidth;
+    while (width > 8 && entries.some((e) => render(e, width).length > columns)) width--;
+    if (width < pathWidth) return entries.map((e) => render(e, width));
+  }
+  return entries.map((e) => render(e, pathWidth));
+}
+
+/**
+ * The draft body rows exactly as presentDraft paints them — its one source
+ * of truth pulled out so the inline editor can reprint the read-mode rows
+ * byte-for-byte on cancel (subject in accent, body indented, no gutter).
+ */
+export function draftRows(draft: string, colors: ColorGate): string[] {
+  const lines = draft.split("\n");
+  const subjectIdx = lines.findIndex((l) => l.trim() !== "");
+  if (subjectIdx === -1) return lines;
+  return lines.map((l, i) => (i === subjectIdx ? `  ${accent(colors, l)}` : l === "" ? "" : `  ${l}`));
 }
 
 export type PresentOpts = Readonly<{
@@ -120,6 +164,8 @@ export type PresentOpts = Readonly<{
   numstat: readonly NumstatEntry[];
   prompt: string; // the live prompt string (kept verbatim; 12's territory)
   colors: ColorGate;
+  /** Terminal width when known; rules and numstat adapt. Undefined = 50-col fallback. */
+  columns?: number;
 }>;
 
 /**
@@ -139,28 +185,20 @@ export function presentDraft(stdout: Pick<NodeJS.WriteStream, "write">, opts: Pr
   // (truncated) appears once per run — the badge is part of the label, not a
   // second line — so a re-presentation after a regeneration doesn't re-print it.
   out.push(
-    `\n${rule("staged changes", colors, opts.truncated ? { text: "(truncated)", paint: warn } : undefined)}`,
+    `\n${rule("STAGED CHANGES", colors, opts.truncated ? { text: "(truncated)", paint: warn } : undefined, opts.columns)}`,
   );
-  out.push(...renderNumstat(opts.numstat));
+  out.push(...renderNumstat(opts.numstat, opts.columns));
 
   // (edited) badge keeps the same draft number — edits don't increment it;
   // only `r` does.
   out.push(
-    `\n${rule(`draft ${opts.draftNumber}`, colors, opts.edited ? { text: "(edited)", paint: accent } : undefined)}`,
+    `\n${rule(`DRAFT ${opts.draftNumber}`, colors, opts.edited ? { text: "(edited)", paint: accent } : undefined, opts.columns)}`,
   );
 
   // Subject (first non-empty line) takes the accent; body stays default prose.
-  const lines = opts.draft.split("\n");
-  const subjectIdx = lines.findIndex((l) => l.trim() !== "");
-  if (subjectIdx !== -1) {
-    lines[subjectIdx] = `  ${accent(colors, lines[subjectIdx])}`;
-    for (let i = 0; i < lines.length; i++) {
-      if (i !== subjectIdx && lines[i] !== "") lines[i] = `  ${lines[i]}`;
-    }
-  }
-  out.push(...lines);
-
-  stdout.write(`${out.join("\n")}\n\n${mutedPrompt(opts.prompt, colors)}`);
+  out.push(...draftRows(opts.draft, colors));
+  out.push(`\n${divider(colors, opts.columns)}`);
+  stdout.write(`${out.join("\n")}\n${mutedPrompt(opts.prompt, colors)}`);
 }
 
 /**
