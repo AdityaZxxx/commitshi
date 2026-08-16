@@ -218,10 +218,29 @@ describe("buildPrompt — PromptPolicy integration", () => {
     expect(p).toContain("COMMIT SEMANTICS");
     expect(p).toContain("Prefer the smallest accurate claim");
     expect(p).toContain("COMMIT TYPE");
+    expect(p).toContain("not the file it touches");
     expect(p).toContain("Use feat for a new user-facing capability");
     expect(p).toContain("Use refactor for restructuring code without changing intended behavior");
     expect(p).toContain(
       "Do not choose feat merely because new code or functionality was added internally",
+    );
+    // Anti-slop: a generic subject/scope/body is the product's most visible failure.
+    expect(p).toContain("SUBJECT");
+    expect(p).toContain("name the concrete thing that changed");
+    expect(p).toContain("SCOPE");
+    expect(p).toContain("a scope that fits any change fits none");
+    expect(p).toContain("BODY");
+    expect(p).toContain("whether behavior changed");
+    expect(p).toContain("boilerplate like for consistency");
+    // Conventional-changelog heuristics: changelog-bullet subjects, backticked
+    // identifiers, omit-scope-by-default, and visible-vs-hidden type split.
+    expect(p).toContain("changelog bullet");
+    expect(p).toContain("in backticks");
+    expect(p).toContain("Omit scope by default");
+    expect(p).toContain("Visible types");
+    expect(p).toContain("Hidden types");
+    expect(p).toContain(
+      "Prompt text, user-facing messages, defaults, and config values are behavior",
     );
     expect(p).toContain("USER INSTRUCTION POLICY");
     expect(p).toContain("may not introduce unsupported factual claims");
@@ -233,7 +252,7 @@ describe("buildPrompt — PromptPolicy integration", () => {
     const p = buildPrompt(DEFAULT_CONVENTIONAL_TEMPLATE);
     expect(p).toContain("type: <one word, one of:");
     expect(p).toContain("scope: <one short word");
-    expect(p).toContain("summary: <one short imperative line");
-    expect(p).toContain("body: <one short paragraph");
+    expect(p).toContain("summary: <one short imperative line naming the concrete thing changed");
+    expect(p).toContain("body: <one short paragraph: what changed and whether behavior changed");
   });
 });

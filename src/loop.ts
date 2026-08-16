@@ -39,8 +39,9 @@ export type LoopDeps = Readonly<{
   ask?: AskKey;
   /** Color-emission seam (tests); production derives it from TTY + NO_COLOR + CI. */
   colorEnabled?: boolean;
-  /** Produces a fresh draft for the same staged diff; failure ends the loop loud. */
-  regenerate: () => Promise<DraftAttempt>;
+  /** Produces a fresh draft for the same staged diff; receives the draft being
+   * replaced so the model can write a different one. Failure ends the loop loud. */
+  regenerate: (previousDraft: string) => Promise<DraftAttempt>;
   /** Revise the current draft with a user instruction; failure ends the loop loud. */
   revise?: (draft: string, instruction: string) => Promise<DraftAttempt>;
   /** Loader seam (tests): called around await regenerate(). Production shows
@@ -357,7 +358,7 @@ export async function interactLoop(first: DraftAttempt, deps: LoopDeps): Promise
         deps.startLoader ?? ((label, write, isTTY) => startLoader(label, write, isTTY))
       )(`regenerating — draft ${1 + regenerations}`, (s) => deps.stdout.write(s), stdoutIsTTY);
       try {
-        attempt = await deps.regenerate();
+        attempt = await deps.regenerate(draft);
       } finally {
         loader.stop();
       }

@@ -4,6 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { main, type MainDeps } from "./main.ts";
+import { REGENERATE_TEMPERATURE } from "./pipeline.ts";
 
 function capture() {
   let buf = "";
@@ -355,9 +356,9 @@ describe("main", () => {
     });
 
     // Ticket r: the wire request carries temperature 0 on the initial draft
-    // and temperature 0.3 on the regeneration — driven through main so the
-    // override is set ONLY by the regenerate call site at main.ts:203.
-    test("initial draft sends temperature 0; r sends temperature 0.3 (wire-level)", async () => {
+    // and REGENERATE_TEMPERATURE on the regeneration — driven through main so
+    // the override is set ONLY by the regenerate call site.
+    test("initial draft sends temperature 0; r sends REGENERATE_TEMPERATURE (wire-level)", async () => {
       await stageA();
       const temperatures: number[] = [];
       const chat: import("./pipeline.ts").PipelineDeps["chat"] = async (_d, req) => {
@@ -372,8 +373,8 @@ describe("main", () => {
         commit: async () => ({ ok: true as const }),
       });
       expect(code).toBe(0);
-      // initial draft → 0, then two regenerations → 0.3 each.
-      expect(temperatures).toEqual([0, 0.3, 0.3]);
+      // initial draft → 0, then two regenerations → REGENERATE_TEMPERATURE each.
+      expect(temperatures).toEqual([0, REGENERATE_TEMPERATURE, REGENERATE_TEMPERATURE]);
     });
 
     test("q cancels — no commit, exit 0", async () => {

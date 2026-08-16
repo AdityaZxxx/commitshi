@@ -3,7 +3,9 @@ import { guardStagedChanges, recentCommitSubjects, stagedDiff } from "./git.ts";
 import { makeResolveApiKey, resolveBundle, type Deps } from "./config.ts";
 import {
   generateDraft,
+  REGENERATE_TEMPERATURE,
   reviseDraft,
+  setPreviousDraftOverride,
   setRegenerateTemperatureOverride,
   type PipelineDeps,
 } from "./pipeline.ts";
@@ -193,13 +195,16 @@ export async function main(
     spawn: loopDeps?.spawn,
     ask: loopDeps?.ask,
     // Regenerate re-runs the SAME pipeline against the SAME unchanged staged
-    // diff: stagedDiff() is read fresh, but the staged set is untouched.
-    regenerate: async () => {
-      setRegenerateTemperatureOverride(0.3);
+    // diff: stagedDiff() is read fresh, but the staged set is untouched. The
+    // draft being replaced is passed down so the model writes a different one.
+    regenerate: async (previousDraft) => {
+      setRegenerateTemperatureOverride(REGENERATE_TEMPERATURE);
+      setPreviousDraftOverride(previousDraft);
       try {
         return attemptFrom(await runPipeline());
       } finally {
         setRegenerateTemperatureOverride(null);
+        setPreviousDraftOverride(null);
       }
     },
     revise: async (draft: string, instruction: string) => {

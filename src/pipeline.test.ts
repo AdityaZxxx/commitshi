@@ -4,6 +4,7 @@ import {
   DEFAULT_ANTHROPIC_MODEL,
   generateDraft,
   reviseDraft,
+  setPreviousDraftOverride,
   setRegenerateTemperatureOverride,
   type PipelineDeps,
 } from "./pipeline.ts";
@@ -358,6 +359,37 @@ describe("generateDraft — regenerate temperature (ticket r)", () => {
     await generateDraft({ ...baseDeps(), chat });
     setRegenerateTemperatureOverride(null);
     expect(temperatures).toEqual([0.3, 0]);
+  });
+});
+
+describe("generateDraft — previous draft on regenerate", () => {
+  test("initial call has no previous-draft block", async () => {
+    const captured: PromptCapture = {};
+    await generateDraft({ ...baseDeps(), chat: makeRecordingChat(OK_REPLY, captured) });
+    expect(captured.user).not.toContain("### Previous draft");
+  });
+
+  test("regenerate call shows the previous draft and demands a different one", async () => {
+    const captured: PromptCapture = {};
+    setPreviousDraftOverride("feat(a): do the thing");
+    try {
+      await generateDraft({ ...baseDeps(), chat: makeRecordingChat(OK_REPLY, captured) });
+    } finally {
+      setPreviousDraftOverride(null);
+    }
+    expect(captured.user).toContain("### Previous draft");
+    expect(captured.user).toContain("feat(a): do the thing");
+    expect(captured.user).toContain("Write a DIFFERENT draft");
+  });
+
+  test("the override does not leak into the next initial call", async () => {
+    const captured: PromptCapture = {};
+    setPreviousDraftOverride("feat(a): do the thing");
+    await generateDraft({ ...baseDeps(), chat: makeRecordingChat(OK_REPLY, captured) });
+    setPreviousDraftOverride(null);
+    const again: PromptCapture = {};
+    await generateDraft({ ...baseDeps(), chat: makeRecordingChat(OK_REPLY, again) });
+    expect(again.user).not.toContain("### Previous draft");
   });
 });
 

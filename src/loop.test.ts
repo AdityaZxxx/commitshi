@@ -155,6 +155,17 @@ describe("interactLoop", () => {
     expect(stdout.text()).toContain("fresh #1");
   });
 
+  test("regenerate receives the draft being replaced", async () => {
+    let received: string | undefined;
+    const regenerate = async (previousDraft: string): Promise<DraftAttempt> => {
+      received = previousDraft;
+      return { ok: true, draft: "feat(a): fresh", truncated: false, numstat: [] };
+    };
+    const { deps } = makeDeps(["r", ""], { regenerate });
+    await interactLoop(good, deps);
+    expect(received).toBe("feat(a): do the thing");
+  });
+
   test("a failed regeneration ends the loop loud, no draft accepted", async () => {
     const regenerate = async (): Promise<DraftAttempt> => ({
       ok: false,

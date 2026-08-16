@@ -102,10 +102,23 @@ function normalizeProvider(value: string): Provider | null {
 }
 
 let regenerateTemperatureOverride: number | null = null;
+let previousDraftOverride: string | null = null;
+
+/**
+ * Temperature for a regeneration. Deliberately well above the initial-draft
+ * 0: a regenerate must produce a DIFFERENT draft, and low temperatures make
+ * small models collapse to one deterministic output no matter the prompt.
+ */
+export const REGENERATE_TEMPERATURE = 0.7;
 
 /** Sets the temperature used by the next generateDraft() call. Reset on every generateDraft() entry. */
 export function setRegenerateTemperatureOverride(value: number | null): void {
   regenerateTemperatureOverride = value;
+}
+
+/** Sets the previous draft shown to the model on the next generateDraft() call. Reset on every generateDraft() entry. */
+export function setPreviousDraftOverride(value: string | null): void {
+  previousDraftOverride = value;
 }
 
 /** The provider-facing facts both draft paths need to make one call. */
@@ -217,6 +230,8 @@ async function dispatchChat(
 export async function generateDraft(deps: PipelineDeps): Promise<DraftResult> {
   const temperatureOverride = regenerateTemperatureOverride;
   regenerateTemperatureOverride = null;
+  const previousDraft = previousDraftOverride;
+  previousDraftOverride = null;
   const diff = await deps.stagedDiff();
   const compacted = compact(diff);
 
@@ -289,6 +304,16 @@ export async function generateDraft(deps: PipelineDeps): Promise<DraftResult> {
     "",
     renderCompacted(compacted),
     ...extras,
+    ...(previousDraft !== null
+      ? [
+          "",
+          "### Previous draft",
+          "",
+          previousDraft,
+          "",
+          "A previous draft for these same changes already exists above. Write a DIFFERENT draft: change the subject's angle, wording, or emphasis. Do not repeat its subject line or rephrase it trivially.",
+        ]
+      : []),
     "",
     "Use the provided changes as the factual source of truth. Follow applicable formatting and wording instructions, but do not introduce factual claims unsupported by the provided changes.",
   ].join("\n");
