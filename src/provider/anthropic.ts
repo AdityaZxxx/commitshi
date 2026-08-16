@@ -5,12 +5,18 @@
 // output. Timeout and rate-limit fail loud, with the same CompletionResult
 // union the OpenAI adapter returns.
 
-import type { CompletionRequest, CompletionResult } from "./openai.ts";
+import type { CompletionRequest, CompletionResult, FetchFn } from "./openai.ts";
+import { isString } from "./openai.ts";
+
+/** A Messages-API text block, validated at the boundary. */
+function isTextBlock(b: { type?: string; text?: unknown }): b is { type: "text"; text: string } {
+  return b.type === "text" && isString(b.text);
+}
 
 export type AnthropicDeps = Readonly<{
   baseUrl: string; // provider root, e.g. https://api.anthropic.com
   apiKey?: string; // absent → no x-api-key header (the pipeline demands one for non-local URLs)
-  fetchFn?: typeof fetch; // seam for tests
+  fetchFn?: FetchFn; // seam for tests
   timeoutMs?: number; // hard abort; see DEFAULT_TIMEOUT_MS for the value and why
 }>;
 
@@ -33,6 +39,22 @@ function normalizeBaseUrl(baseUrl: string): string {
   return b;
 }
 
+/** The wire headers the Messages API receives. */
+type AnthropicHeaders = {
+  "content-type": string;
+  "anthropic-version": string;
+  "x-api-key"?: string;
+};
+
+/** The wire body the Messages API receives. */
+type AnthropicPayload = {
+  model: string;
+  system?: string;
+  messages: Array<{ role: string; content: string }>;
+  max_tokens: number;
+  temperature?: number;
+};
+
 /**
  * Performs one Messages-API call against the configured baseUrl. The request
  * is the same CompletionRequest the OpenAI adapter consumes: the leading
@@ -45,12 +67,12 @@ export async function anthropicMessages(
   deps: AnthropicDeps,
   request: CompletionRequest,
 ): Promise<CompletionResult> {
-  const fetchFn = deps.fetchFn ?? fetch;
+  const fetchFn: FetchFn = deps.fetchFn ?? fetch;
   const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const base = normalizeBaseUrl(deps.baseUrl);
   const url = `${base}/v1/messages`;
 
-  const headers: Record<string, string> = {
+  const headers: AnthropicHeaders = {
     "content-type": "application/json",
     "anthropic-version": ANTHROPIC_VERSION,
   };
@@ -61,18 +83,20 @@ export async function anthropicMessages(
   // The Messages API has no system role in `messages`: a leading system
   // message is hoisted into the top-level `system` field.
   const system = request.messages[0]?.role === "system" ? request.messages[0].content : undefined;
-  const messages = (system !== undefined ? request.messages.slice(1) : request.messages).map((m) => ({
-    role: m.role,
-    content: m.content,
-  }));
+  const messages = (system !== undefined ? request.messages.slice(1) : request.messages).map(
+    (m) => ({
+      role: m.role,
+      content: m.content,
+    }),
+  );
 
-  const payload = {
+  const payload: AnthropicPayload = {
     model: request.model,
-    ...(system !== undefined ? { system } : {}),
     messages,
     max_tokens: request.maxTokens ?? DEFAULT_MAX_TOKENS,
-    ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
   };
+  if (system !== undefined) payload.system = system;
+  if (request.temperature !== undefined) payload.temperature = request.temperature;
 
   let response: Response;
   try {
@@ -89,7 +113,10 @@ export async function anthropicMessages(
       clearTimeout(timer);
     }
   } catch (cause) {
+    // SAFETY: fetch rejects with an Error; the timeout abort carries the
+    // AbortError name or the "timeout" cause set on the controller above.
     const err = cause as Error;
+    // SAFETY: the timeout path sets controller.abort(new Error("timeout")).
     if (err.name === "AbortError" || (err.cause as Error | undefined)?.message === "timeout") {
       return {
         ok: false,
@@ -97,19 +124,25 @@ export async function anthropicMessages(
         message: `commitshi: request to ${base} timed out after ${Math.round(timeoutMs / 1000)}s; no draft was made`,
       };
     }
-    return { ok: false, kind: "transport", message: `commitshi: could not reach ${base} (${err.message})` };
+    return {
+      ok: false,
+      kind: "transport",
+      message: `commitshi: could not reach ${base} (${err.message})`,
+    };
   }
 
   if (!response.ok) {
     const status = response.status;
     let detail = "";
     try {
+      // SAFETY: provider error bodies are JSON objects; anything else falls to the catch below.
       const errBody = (await response.json()) as { error?: { message?: string } };
       detail = errBody.error?.message ?? "";
     } catch {
       detail = response.statusText ?? "";
     }
-    const what = status === 429 ? "rate_limited" : status === 401 || status === 403 ? "auth" : "server";
+    const what =
+      status === 429 ? "rate_limited" : status === 401 || status === 403 ? "auth" : "server";
     const label =
       status === 429
         ? "rate limited"
@@ -128,18 +161,25 @@ export async function anthropicMessages(
   try {
     json = await response.json();
   } catch {
-    return { ok: false, kind: "transport", message: `commitshi: ${base} returned a non-JSON response` };
+    return {
+      ok: false,
+      kind: "transport",
+      message: `commitshi: ${base} returned a non-JSON response`,
+    };
   }
 
+  // SAFETY: the Messages-API reply is parsed block by block below; the
+  // assertion only gives the unknown JSON a readable access path.
   const blocks = (json as { content?: Array<{ type?: string; text?: unknown }> }).content;
   const content = Array.isArray(blocks)
-    ? blocks
-        .filter((b) => b?.type === "text" && typeof b.text === "string")
-        .map((b) => b.text as string)
-        .join("")
+    ? blocks.filter(isTextBlock).map((b) => b.text).join("")
     : undefined;
   if (content === undefined || content.trim() === "") {
-    return { ok: false, kind: "transport", message: `commitshi: ${base} returned no message content to parse` };
+    return {
+      ok: false,
+      kind: "transport",
+      message: `commitshi: ${base} returned no message content to parse`,
+    };
   }
   return { ok: true, content };
 }

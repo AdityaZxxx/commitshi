@@ -1,20 +1,19 @@
 import { describe, expect, test } from "bun:test";
 import { anthropicMessages, type AnthropicDeps } from "./anthropic.ts";
-import type { CompletionResult } from "./openai.ts";
+import type { CompletionResult, FetchFn } from "./openai.ts";
 
 /** A programmable fetch seam. */
-function fakeFetch(
-  impl: (url: string, init: RequestInit) => Promise<Response> | Response,
-): { fn: typeof fetch; calls: Array<{ url: string; init: RequestInit }> } {
+function fakeFetch(impl: (url: string, init: RequestInit) => Promise<Response> | Response) {
   const calls: Array<{ url: string; init: RequestInit }> = [];
-  const fn = (async (url: unknown, init: unknown) => {
-    calls.push({ url: String(url), init: init as RequestInit });
-    return impl(String(url), init as RequestInit);
-  }) as unknown as typeof fetch;
+  const fn: FetchFn = async (url, init) => {
+    const recorded = init ?? {};
+    calls.push({ url: String(url), init: recorded });
+    return await impl(String(url), recorded);
+  };
   return { fn, calls };
 }
 
-function jsonResponse(body: unknown, status = 200): Response {
+function jsonResponse<T>(body: T, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: { "content-type": "application/json" },
@@ -79,7 +78,7 @@ describe("anthropic adapter — request shape", () => {
     const { fn, calls } = fakeFetch(() => jsonResponse(OK_BODY));
     await anthropicMessages({ baseUrl: "http://h", fetchFn: fn }, { ...REQ, temperature: 0 });
     const body = JSON.parse(String(calls[0].init.body));
-    expect(typeof body.max_tokens).toBe("number");
+    expect(body.max_tokens).toEqual(expect.any(Number));
     expect(body.max_tokens).toBeGreaterThan(0);
     expect(body.temperature).toBe(0);
   });
@@ -103,7 +102,12 @@ describe("anthropic adapter — request shape", () => {
 
   test("multiple text blocks are concatenated in order", async () => {
     const { fn } = fakeFetch(() =>
-      jsonResponse({ content: [{ type: "text", text: "line1\n" }, { type: "text", text: "line2" }] }),
+      jsonResponse({
+        content: [
+          { type: "text", text: "line1\n" },
+          { type: "text", text: "line2" },
+        ],
+      }),
     );
     const r = await anthropicMessages({ baseUrl: "http://h", fetchFn: fn }, REQ);
     expect(r).toEqual({ ok: true, content: "line1\nline2" });
@@ -139,7 +143,10 @@ describe("anthropic adapter — failure handling (same semantics as the OpenAI a
     const { fn } = fakeFetch(() => Promise.reject(new Error("ECONNREFUSED")));
     const r = await anthropicMessages({ baseUrl: "http://h", fetchFn: fn }, REQ);
     expect(r.ok).toBe(false);
-    if (!r.ok) expect((r as { message: string }).message).toContain("could not reach");
+    if (!r.ok) {
+      // SAFETY: every failure variant of CompletionResult carries a message.
+      expect((r as { message: string }).message).toContain("could not reach");
+    }
   });
 
   test("abort → timeout failure", async () => {
@@ -158,7 +165,10 @@ describe("anthropic adapter — failure handling (same semantics as the OpenAI a
     const { fn } = fakeFetch(() => jsonResponse({ content: [] }));
     const r = await anthropicMessages({ baseUrl: "http://h", fetchFn: fn }, REQ);
     expect(r.ok).toBe(false);
-    if (!r.ok) expect((r as { message: string }).message).toContain("no message content");
+    if (!r.ok) {
+      // SAFETY: every failure variant of CompletionResult carries a message.
+      expect((r as { message: string }).message).toContain("no message content");
+    }
   });
 
   test("non-JSON 200 → transport failure", async () => {

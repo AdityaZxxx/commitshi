@@ -1,5 +1,15 @@
 import type { EditorState } from "./state.ts";
-import { moveLeft, moveRight, moveUp, moveDown, insertCharacter, backspace, deleteForward, insertNewline } from "./state.ts";
+import type { Key as ReadlineKey } from "node:readline";
+import {
+  moveLeft,
+  moveRight,
+  moveUp,
+  moveDown,
+  insertCharacter,
+  backspace,
+  deleteForward,
+  insertNewline,
+} from "./state.ts";
 
 export type Key =
   | { type: "char"; value: string }
@@ -14,7 +24,7 @@ export type Key =
   | { type: "cancel" }
   | { type: "unknown" };
 
-export function normalizeKeypress(str: string, key: any): Key {
+export function normalizeKeypress(str: string, key: ReadlineKey | undefined): Key {
   if (!key) {
     if (str) {
       return { type: "char", value: str };
@@ -63,7 +73,10 @@ export function normalizeKeypress(str: string, key: any): Key {
   return { type: "unknown" };
 }
 
-export function applyKey(state: EditorState, key: Key): { state: EditorState; done?: "save" | "cancel" } {
+/** The outcome of applying one key to the editor state. */
+export type KeyOutcome = { state: EditorState; done?: "save" | "cancel" };
+
+export function applyKey(state: EditorState, key: Key): KeyOutcome {
   switch (key.type) {
     case "left":
       return { state: moveLeft(state) };

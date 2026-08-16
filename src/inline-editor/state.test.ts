@@ -9,10 +9,8 @@ import {
   moveDown,
   insertCharacter,
   backspace,
-  deleteForward,
   insertNewline,
   type EditorState,
-  type Draft,
 } from "./state.ts";
 
 function withCursor(state: EditorState, cursor: EditorState["cursor"]): EditorState {

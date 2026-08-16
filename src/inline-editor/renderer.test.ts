@@ -37,7 +37,7 @@ describe("visual layout wrapping", () => {
   test("short line fits in one visual row", () => {
     const state = initialState({ subject: "short", body: [] });
     const layout = buildVisualLayout(state, 80);
-    const subjectRows = layout.filter(v => v.logicalArea === "subject");
+    const subjectRows = layout.filter((v) => v.logicalArea === "subject");
     expect(subjectRows.length).toBe(1);
     expect(subjectRows[0].text).toBe("short");
   });
@@ -46,7 +46,7 @@ describe("visual layout wrapping", () => {
     const long = "a".repeat(100);
     const state = initialState({ subject: long, body: [] });
     const layout = buildVisualLayout(state, 40);
-    const subjectRows = layout.filter(v => v.logicalArea === "subject");
+    const subjectRows = layout.filter((v) => v.logicalArea === "subject");
     expect(subjectRows.length).toBeGreaterThan(1);
   });
 
@@ -81,7 +81,7 @@ describe("visual layout wrapping", () => {
     const stateWithCursor = withCursor(state, { area: "body", row: 1, col: 3 });
     const pos = cursorPosition(stateWithCursor, 40);
     const layout = buildVisualLayout(state, 40);
-    const firstBodyRows = layout.filter(v => v.logicalArea === "body" && v.logicalRow === 0);
+    const firstBodyRows = layout.filter((v) => v.logicalArea === "body" && v.logicalRow === 0);
     const expectedRow = 2 + firstBodyRows.length;
     expect(pos.row).toBe(expectedRow);
   });
@@ -90,13 +90,13 @@ describe("visual layout wrapping", () => {
     const line = "a".repeat(10) + "世界".repeat(10) + "a".repeat(10);
     const state = initialState({ subject: line, body: [] });
     const layout = buildVisualLayout(state, 30);
-    expect(layout.filter(v => v.logicalArea === "subject").length).toBeGreaterThan(0);
+    expect(layout.filter((v) => v.logicalArea === "subject").length).toBeGreaterThan(0);
   });
 
   test("narrow terminal", () => {
     const state = initialState({ subject: "short", body: [] });
     const layout = buildVisualLayout(state, 10);
-    const subjectRows = layout.filter(v => v.logicalArea === "subject");
+    const subjectRows = layout.filter((v) => v.logicalArea === "subject");
     expect(subjectRows[0].text.length).toBeLessThanOrEqual(10);
   });
 });

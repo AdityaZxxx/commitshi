@@ -18,15 +18,15 @@ import { readFile, unlink, writeFile } from "node:fs/promises";
 import { spawn as nodeSpawn } from "node:child_process";
 import { presentDraft, resolveColors, shouldEmitColor, type ColorGate } from "./presentation.ts";
 import { startLoader } from "./loader.ts";
-import { run } from "./inline-editor/index.ts";
+import { run, type EditorStdin, type EditorStdout } from "./inline-editor/index.ts";
 import type { NumstatEntry } from "./compaction.ts";
 
 /** One raw keypress chunk from the user: the bytes as typed, unnormalized; null on EOF. */
 export type AskKey = () => Promise<string | null>;
 
 export type LoopDeps = Readonly<{
-  stdin: NodeJS.ReadStream;
-  stdout: Pick<NodeJS.WriteStream, "write">;
+  stdin: EditorStdin;
+  stdout: EditorStdout;
   stderr: Pick<NodeJS.WriteStream, "write">;
   /** TTY checks are seams so tests drive the loop without a pty. */
   stdinIsTTY?: boolean;
@@ -45,7 +45,11 @@ export type LoopDeps = Readonly<{
   revise?: (draft: string, instruction: string) => Promise<DraftAttempt>;
   /** Loader seam (tests): called around await regenerate(). Production shows
    *  the spinner; tests may inject a no-op. */
-  startLoader?: (label: string, write: (s: string) => unknown, isTTY: boolean) => { stop: () => void };
+  startLoader?: (
+    label: string,
+    write: (s: string) => void,
+    isTTY: boolean,
+  ) => { stop: () => void };
 }>;
 
 /** One draft under consideration, or the loud failure to produce one. */
@@ -64,7 +68,8 @@ export type LoopResult =
  * `i` splits into the EDIT floor below the rows; the DRAFT section keeps the
  * default English names for the commands, single-bucket and consultable).
  */
-const PROMPT = "[Enter] accept  ·  [i] edit here  ·  [e] edit in editor  ·  [r] regenerate  ·  [p] revise  ·  [q] quit";
+const PROMPT =
+  "[Enter] accept  ·  [i] edit here  ·  [e] edit in editor  ·  [r] regenerate  ·  [p] revise  ·  [q] quit";
 
 type FileIo = { file: (path: string) => { text: () => Promise<string> } };
 
@@ -75,13 +80,12 @@ const nodeFileIo: FileIo = { file: (path) => ({ text: () => readFile(path, "utf8
  * verbatim. null on EOF. Ctrl-C arrives as "\x03"; what it means (interrupt
  * vs cancel) is the consumer's call.
  */
-function makeKeyAsker(stdin: NodeJS.ReadStream): { ask: AskKey; close: () => void } {
-  const raw = stdin as NodeJS.ReadStream & { setRawMode?: (mode: boolean) => void };
+function makeKeyAsker(stdin: EditorStdin) {
   const restore = () => {
-    raw.setRawMode?.(false);
+    stdin.setRawMode?.(false);
     stdin.pause();
   };
-  raw.setRawMode?.(true);
+  stdin.setRawMode?.(true);
   stdin.resume();
 
   const ask: AskKey = () =>
@@ -131,7 +135,8 @@ async function editDraft(
   if (editor === undefined || editor.trim() === "") {
     return {
       ok: false,
-      message: "commitshi: $EDITOR is not set. Set $EDITOR in your shell, or press Enter to accept the draft or q to quit.",
+      message:
+        "commitshi: $EDITOR is not set. Set $EDITOR in your shell, or press Enter to accept the draft or q to quit.",
     };
   }
 
@@ -141,16 +146,26 @@ async function editDraft(
     const spawn = deps.spawn ?? runEditor;
     const code = await spawn(editor, path);
     if (code !== 0) {
-      return { ok: false, message: `commitshi: editor "${editor}" exited with code ${code}. Fix the editor and re-run commitshi.` };
+      return {
+        ok: false,
+        message: `commitshi: editor "${editor}" exited with code ${code}. Fix the editor and re-run commitshi.`,
+      };
     }
     // Strip trailing newlines the editor added; the draft keeps its interior.
     const text = (await fileIo.file(path).text()).replace(/\n+$/, "");
     if (text.trim() === "") {
-      return { ok: false, message: "commitshi: editor left the draft empty. Re-run commitshi to draft again." };
+      return {
+        ok: false,
+        message: "commitshi: editor left the draft empty. Re-run commitshi to draft again.",
+      };
     }
     return { ok: true, text };
   } catch (error) {
-    return { ok: false, message: `commitshi: could not run editor "${editor}": ${(error as Error).message}. Fix $EDITOR and re-run commitshi.` };
+    return {
+      ok: false,
+      // SAFETY: fs/spawn failures surface as Error instances.
+      message: `commitshi: could not run editor "${editor}": ${(error as Error).message}. Fix $EDITOR and re-run commitshi.`,
+    };
   } finally {
     await unlink(path).catch(() => {});
   }
@@ -163,12 +178,16 @@ async function inlineEdit(
   draft: string,
   _ask: AskKey,
   _pushback: (s: string) => void,
-  stdin: NodeJS.ReadStream,
-  stdout: Pick<NodeJS.WriteStream, "write">,
+  stdin: EditorStdin,
+  stdout: EditorStdout,
   _colors: ColorGate,
   _columns: number | undefined,
-): Promise<{ ok: true; text: string } | { ok: false; kind: "cancelled" } | { ok: false; kind: "empty-subject"; message: string }> {
-  const result = await run(draft, stdin as NodeJS.ReadStream, stdout as NodeJS.WriteStream);
+): Promise<
+  | { ok: true; text: string }
+  | { ok: false; kind: "cancelled" }
+  | { ok: false; kind: "empty-subject"; message: string }
+> {
+  const result = await run(draft, stdin, stdout);
   if (!result.ok) {
     return result;
   }
@@ -186,7 +205,7 @@ export async function interactLoop(first: DraftAttempt, deps: LoopDeps): Promise
   // takes over the TTY. Non-interactive runs (hooks, pipes, CI) get a clear
   // error — never a silent accept.
   const stdinIsTTY = deps.stdinIsTTY ?? Boolean(deps.stdin.isTTY);
-  const stdoutIsTTY = deps.stdoutIsTTY ?? Boolean((deps.stdout as NodeJS.WriteStream).isTTY);
+  const stdoutIsTTY = deps.stdoutIsTTY ?? Boolean(deps.stdout.isTTY);
   if (!stdinIsTTY || !stdoutIsTTY) {
     return {
       ok: false,
@@ -205,11 +224,8 @@ export async function interactLoop(first: DraftAttempt, deps: LoopDeps): Promise
   // The color gate resolves once: TTY + !NO_COLOR + !CI. The render seam is
   // presentDraft; the prompt string stays exactly the 12-pinned constant.
   const env = { ...process.env, ...deps.env };
-  // getColorDepth / isTTY live on the real stream; they're probed optionally so
-  // the write-only test seam still satisfies the type.
-  const probe = deps.stdout as NodeJS.WriteStream;
   const colorEnabled = deps.colorEnabled ?? shouldEmitColor(deps.stdout, env, stdoutIsTTY);
-  const colors = resolveColors(colorEnabled, probe.getColorDepth?.bind(probe));
+  const colors = resolveColors(colorEnabled, deps.stdout.getColorDepth?.bind(deps.stdout));
 
   const injectedAsk = deps.ask !== undefined;
   const asker = injectedAsk ? { ask: deps.ask, close: () => {} } : makeKeyAsker(deps.stdin);
@@ -218,11 +234,17 @@ export async function interactLoop(first: DraftAttempt, deps: LoopDeps): Promise
   let pushedBack: string | null = null;
   const ask = injectedAsk
     ? async (): Promise<string | null> => {
-        if (pushedBack !== null) { const v = pushedBack; pushedBack = null; return v; }
+        if (pushedBack !== null) {
+          const v = pushedBack;
+          pushedBack = null;
+          return v;
+        }
         return asker.ask();
       }
     : asker.ask;
-  const pushback = (s: string) => { pushedBack = s; };
+  const pushback = (s: string) => {
+    pushedBack = s;
+  };
   const close = () => {
     if (!injectedAsk) asker.close();
   };
@@ -254,7 +276,7 @@ export async function interactLoop(first: DraftAttempt, deps: LoopDeps): Promise
         numstat: attempt.numstat,
         prompt: PROMPT,
         colors,
-        columns: probe.isTTY ? probe.columns : undefined,
+        columns: deps.stdout.isTTY ? deps.stdout.columns : undefined,
       });
       needsRender = false;
     }
@@ -262,14 +284,22 @@ export async function interactLoop(first: DraftAttempt, deps: LoopDeps): Promise
 
     if (rawAnswer === null) {
       close();
-      return { ok: false, exitCode: 1, message: "commitshi: input closed — nothing accepted, no commit" };
+      return {
+        ok: false,
+        exitCode: 1,
+        message: "commitshi: input closed — nothing accepted, no commit",
+      };
     }
     // The seam delivers raw bytes; the decision prompt reads keys. Ctrl-C at
     // the decision prompt is a real interrupt (restore the terminal, re-raise).
     if (rawAnswer === "\x03") {
       close();
       process.kill(process.pid, "SIGINT");
-      return { ok: false, exitCode: 130, message: "commitshi: interrupted — nothing accepted, no commit" };
+      return {
+        ok: false,
+        exitCode: 130,
+        message: "commitshi: interrupted — nothing accepted, no commit",
+      };
     }
     const answer = rawAnswer === "\r" || rawAnswer === "\n" ? "" : rawAnswer.trim().toLowerCase();
 
@@ -290,10 +320,18 @@ export async function interactLoop(first: DraftAttempt, deps: LoopDeps): Promise
       continue;
     }
     if (answer === "i") {
-      const editResult = await inlineEdit(draft, ask, pushback, deps.stdin, deps.stdout, colors, probe.isTTY ? probe.columns : undefined);
+      const editResult = await inlineEdit(
+        draft,
+        ask,
+        pushback,
+        deps.stdin,
+        deps.stdout,
+        colors,
+        deps.stdout.isTTY ? deps.stdout.columns : undefined,
+      );
       // readMultiline pauses raw mode and stdin; restore for the loop.
       if (!injectedAsk) {
-        (deps.stdin as any).setRawMode?.(true);
+        deps.stdin.setRawMode?.(true);
         deps.stdin.resume();
       }
       if (!editResult.ok) {
@@ -319,11 +357,9 @@ export async function interactLoop(first: DraftAttempt, deps: LoopDeps): Promise
       // Loader around the model call: spinner on TTY, silent off-TTY. It
       // fully erases itself before the next presentDraft frame is written,
       // so the framed stage layout is never garbled by loader output.
-      const loader = (deps.startLoader ?? ((label, write, isTTY) => startLoader(label, write, isTTY)))(
-        `regenerating — draft ${1 + regenerations}`,
-        (s) => deps.stdout.write(s),
-        stdoutIsTTY,
-      );
+      const loader = (
+        deps.startLoader ?? ((label, write, isTTY) => startLoader(label, write, isTTY))
+      )(`regenerating — draft ${1 + regenerations}`, (s) => deps.stdout.write(s), stdoutIsTTY);
       try {
         attempt = await deps.regenerate();
       } finally {
@@ -346,12 +382,20 @@ export async function interactLoop(first: DraftAttempt, deps: LoopDeps): Promise
         const raw = await ask();
         if (raw === null) {
           close();
-          return { ok: false, exitCode: 1, message: "commitshi: input closed — nothing accepted, no commit" };
+          return {
+            ok: false,
+            exitCode: 1,
+            message: "commitshi: input closed — nothing accepted, no commit",
+          };
         }
         if (raw === "\x03") {
           close();
           process.kill(process.pid, "SIGINT");
-          return { ok: false, exitCode: 130, message: "commitshi: interrupted — nothing accepted, no commit" };
+          return {
+            ok: false,
+            exitCode: 130,
+            message: "commitshi: interrupted — nothing accepted, no commit",
+          };
         }
         if (raw === "\x1b") {
           // Escape cancels revision, erase the revision line and return to prompt line
@@ -385,11 +429,9 @@ export async function interactLoop(first: DraftAttempt, deps: LoopDeps): Promise
         continue;
       }
       edited = false;
-      const loader = (deps.startLoader ?? ((label, write, isTTY) => startLoader(label, write, isTTY)))(
-        `revising draft…`,
-        (s) => deps.stdout.write(s),
-        stdoutIsTTY,
-      );
+      const loader = (
+        deps.startLoader ?? ((label, write, isTTY) => startLoader(label, write, isTTY))
+      )(`revising draft…`, (s) => deps.stdout.write(s), stdoutIsTTY);
       try {
         attempt = await deps.revise(draft, instruction);
       } finally {
@@ -405,7 +447,9 @@ export async function interactLoop(first: DraftAttempt, deps: LoopDeps): Promise
     }
     // Unknown key: name it once to avoid terminal pollution
     if (!unknownNotified) {
-      deps.stdout.write("\ncommitshi: unknown key — press Enter to accept, i to edit here, e to edit in editor, r to regenerate, p to revise, q to quit\n");
+      deps.stdout.write(
+        "\ncommitshi: unknown key — press Enter to accept, i to edit here, e to edit in editor, r to regenerate, p to revise, q to quit\n",
+      );
       unknownNotified = true;
     }
   }

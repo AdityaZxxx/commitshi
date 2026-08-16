@@ -46,6 +46,7 @@ export function segmentTemplate(template: string): readonly Segment[] {
     if (open > i) out.push({ kind: "literal", text: template.slice(i, open) });
     const close = template.indexOf("}", open + 1);
     const name = close === -1 ? template.slice(open + 1) : template.slice(open + 1, close);
+    // SAFETY: callers run parseTemplate first, which rejects unknown token names.
     out.push({ kind: "token", name: name as TokenName });
     i = close === -1 ? template.length : close + 1;
   }
@@ -55,25 +56,37 @@ export function segmentTemplate(template: string): readonly Segment[] {
 /** Validates a template string. Empty is invalid here — the caller substitutes the default before consulting this. */
 export function parseTemplate(template: string): TemplateParse {
   if (template.trim() === "") {
-    return { ok: false, error: "template is empty; empty means the Conventional Commits default applies instead" };
+    return {
+      ok: false,
+      error: "template is empty; empty means the Conventional Commits default applies instead",
+    };
   }
   const tokens: TokenName[] = [];
   for (let m = /\{(.*?)\}/g, match = m.exec(template); match !== null; match = m.exec(template)) {
     const name = match[1];
+    // SAFETY: widening KNOWN_TOKENS to string[] only to test membership of an arbitrary string.
     if (!(KNOWN_TOKENS as readonly string[]).includes(name)) {
       return {
         ok: false,
         error: `unknown token {${name}}; known tokens are ${KNOWN_TOKENS.map((t) => `{${t}}`).join(", ")}`,
       };
     }
+    // SAFETY: membership in KNOWN_TOKENS was just checked above.
     tokens.push(name as TokenName);
   }
   if (tokens.length === 0) {
-    return { ok: false, error: "template has no tokens; add at least one of {type}, {scope}, {summary}, {body}" };
+    return {
+      ok: false,
+      error: "template has no tokens; add at least one of {type}, {scope}, {summary}, {body}",
+    };
   }
   const seen = new Set<string>();
   for (const t of tokens) {
-    if (seen.has(t)) return { ok: false, error: `token {${t}} appears more than once; each token may appear at most once` };
+    if (seen.has(t))
+      return {
+        ok: false,
+        error: `token {${t}} appears more than once; each token may appear at most once`,
+      };
     seen.add(t);
   }
   return { ok: true, kind: tokens[0] === "type" ? "conventional" : "custom", tokens };
@@ -83,12 +96,12 @@ export function parseTemplate(template: string): TemplateParse {
 
 const FIELD_RE = /^(type|scope|summary|body)\s*:\s*(.*)$/;
 /** A value line only in the default template carries a fixed single-line slot. */
-const SINGLE_LINE: Readonly<Record<TokenName, boolean>> = {
+const SINGLE_LINE = {
   type: true,
   scope: true,
   summary: true,
   body: false,
-};
+} satisfies Record<TokenName, boolean>;
 
 export type FillValues = Readonly<Partial<Record<TokenName, string>>>;
 
@@ -116,6 +129,7 @@ export function parseFillContract(
   for (const line of lines) {
     const m = FIELD_RE.exec(line.trimEnd() === "" ? "" : line);
     if (m !== null) {
+      // SAFETY: FIELD_RE's first group only matches the four token names.
       const field = m[1] as TokenName;
       if (!wantedSet.has(field)) {
         stray.push(line);
@@ -151,21 +165,31 @@ export function parseFillContract(
     let value = bucket.vals.join("\n").trim();
     if (value === "-") value = "";
     if (/\{[a-z]+\}/.test(value)) {
-      return { ok: false, error: `token {${token}}: value still contains a template token (${RegExp["$&"]}); emit values only, never the { } names` };
+      return {
+        ok: false,
+        error: `token {${token}}: value still contains a template token (${RegExp["$&"]}); emit values only, never the { } names`,
+      };
     }
     // scope is the optional half of Conventional Commits: "no value" means no
     // scope at all (and no parens). Any other token may be empty only when its
     // whole template line is droppable.
     if (value === "" && !omissible.has(token) && token !== "scope") {
-      return { ok: false, error: `token {${token}} was given no value, but its position in the template requires one` };
+      return {
+        ok: false,
+        error: `token {${token}} was given no value, but its position in the template requires one`,
+      };
     }
     if (SINGLE_LINE[token] && value !== "" && value.includes("\n")) {
-      return { ok: false, error: `token {${token}} must be a single line; got ${JSON.stringify(value.slice(0, 60))}` };
+      return {
+        ok: false,
+        error: `token {${token}} must be a single line; got ${JSON.stringify(value.slice(0, 60))}`,
+      };
     }
     values.set(token, value);
   }
 
   // A field the template did not ask for was already caught as stray prose.
+  // SAFETY: every wanted token was set in the loop above, so the map is total over TokenName.
   return { ok: true, values: Object.fromEntries(values) as Record<TokenName, string> };
 }
 
@@ -173,14 +197,22 @@ export function parseFillContract(
 function validateValues(values: FillValues): Readonly<{ ok: true } | { ok: false; error: string }> {
   const type = values.type;
   if (type !== undefined) {
-    if (type === "") return { ok: false, error: "token {type} was left empty; the commit needs a one-word type (e.g. feat, fix, chore)" };
+    if (type === "")
+      return {
+        ok: false,
+        error:
+          "token {type} was left empty; the commit needs a one-word type (e.g. feat, fix, chore)",
+      };
     if (!/^[A-Za-z][A-Za-z0-9-]*$/.test(type)) {
       return { ok: false, error: `token {type} must be one word; got ${JSON.stringify(type)}` };
     }
   }
   const scope = values.scope;
   if (scope !== undefined && scope !== "" && !/^[^\s()]+$/.test(scope)) {
-    return { ok: false, error: `token {scope} must be a single word or empty; got ${JSON.stringify(scope)}` };
+    return {
+      ok: false,
+      error: `token {scope} must be a single word or empty; got ${JSON.stringify(scope)}`,
+    };
   }
   return { ok: true };
 }
@@ -204,7 +236,12 @@ function render(template: string, values: FillValues): string {
   });
   return filledLines
     .map(({ tplLine, line }) => {
-      if (line.trim() === "" && tplLine.trim() !== "" && hasOnlyWhitespaceAndEmptyTokens(tplLine, values)) return null;
+      if (
+        line.trim() === "" &&
+        tplLine.trim() !== "" &&
+        hasOnlyWhitespaceAndEmptyTokens(tplLine, values)
+      )
+        return null;
       return line;
     })
     .filter((line): line is string => line !== null)
@@ -217,6 +254,7 @@ function hasOnlyWhitespaceAndEmptyTokens(templateLine: string, values: FillValue
   const pieces = templateLine.split(/\{[a-z]+\}/);
   if (pieces.some((lit) => lit.trim() !== "")) return false;
   for (const m of templateLine.matchAll(/\{([a-z]+)\}/g)) {
+    // SAFETY: hasOnlyWhitespaceAndEmptyTokens is only called on validated templates.
     const v = values[m[1] as TokenName];
     if (v !== undefined && v !== "") return false;
   }
@@ -279,16 +317,28 @@ function withParens(scope: string | undefined): string {
 
 // --- prompt assembly --------------------------------------------------------
 
-const TYPE_VOCAB = ["feat", "fix", "docs", "chore", "refactor", "test", "perf", "style", "build", "ci", "revert"];
+const TYPE_VOCAB = [
+  "feat",
+  "fix",
+  "docs",
+  "chore",
+  "refactor",
+  "test",
+  "perf",
+  "style",
+  "build",
+  "ci",
+  "revert",
+];
 
 /** Builds the fill-contract instructions the model must follow, for the given template tokens. */
 export function buildFillInstructions(tokens: readonly TokenName[]): string {
-  const describe: Record<TokenName, string> = {
+  const describe = {
     type: `one word, one of: ${TYPE_VOCAB.join(" ")}`,
     scope: "one short word naming the area, or - if none fits",
     summary: "one short imperative line, no trailing period",
     body: "one short paragraph of context, or - if nothing more is worth saying",
-  };
+  } satisfies Record<TokenName, string>;
   const lines = tokens.map((t) => `${t}: <${describe[t]}>`);
   return [
     "Reply with exactly these lines, in this order, and nothing else:",

@@ -1,7 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import { CONTEXT_RADIUS, HUNK_CAP, compact, numstat, parseDiff, renderCompacted, slimHunk } from "./compaction.ts";
+import {
+  HUNK_CAP,
+  compact,
+  numstat,
+  parseDiff,
+  renderCompacted,
+  slimHunk,
+  type DiffHunk,
+} from "./compaction.ts";
 
-function hunk(oldStart: number, ...lines: string[]): { oldStart: number; lines: string[] } {
+function hunk(oldStart: number, ...lines: string[]): DiffHunk {
   return { oldStart, lines };
 }
 
@@ -15,21 +23,17 @@ describe("slimHunk", () => {
     const body = hunk(
       1,
       " head",
-      "-removed", "+added",
+      "-removed",
+      "+added",
       ...Array.from({ length: 10 }, (_, i) => ` ctx${i}`),
-      "-gone", "+here",
+      "-gone",
+      "+here",
       " tail",
     );
     expect(slimHunk(body)).toBe(
-      [
-        " head",
-        "-removed", "+added",
-        " ctx0",
-        "⋮ 5–12",
-        " ctx9",
-        "-gone", "+here",
-        " tail",
-      ].join("\n"),
+      [" head", "-removed", "+added", " ctx0", "⋮ 5–12", " ctx9", "-gone", "+here", " tail"].join(
+        "\n",
+      ),
     );
   });
 
@@ -45,7 +49,14 @@ describe("slimHunk", () => {
   });
 
   test("collapsed region spans correct old-line range", () => {
-    const body = hunk(100, " a", "+x", ...Array.from({ length: 8 }, (_, i) => ` c${i}`), "+y", " b");
+    const body = hunk(
+      100,
+      " a",
+      "+x",
+      ...Array.from({ length: 8 }, (_, i) => ` c${i}`),
+      "+y",
+      " b",
+    );
     const slim = slimHunk(body);
     // old lines: a=100, c0..c7=101..108, b=109; radius 1 keeps c0 and c7
     expect(slim).toContain("⋮ 103–108");
@@ -167,9 +178,11 @@ describe("compact", () => {
       "+++ b/big.txt",
       "@@ -1,2004 +1,2004 @@",
       " head",
-      "-v1", "+v2",
+      "-v1",
+      "+v2",
       ...ctx,
-      "-t1", "+t2",
+      "-t1",
+      "+t2",
       " tail",
     ].join("\n");
     const result = compact(diff);
@@ -184,20 +197,18 @@ describe("compact", () => {
 
   test("over the hunk cap the digest is marked truncated and the render discloses it", () => {
     const many = Array.from({ length: HUNK_CAP + 1 }, (_, i) =>
-      [
-        `diff --git a/f${i} b/f${i}`,
-        `--- a/f${i}`,
-        `+++ b/f${i}`,
-        "@@ -1 +1 @@",
-        "-a", "+b",
-      ].join("\n"),
+      [`diff --git a/f${i} b/f${i}`, `--- a/f${i}`, `+++ b/f${i}`, "@@ -1 +1 @@", "-a", "+b"].join(
+        "\n",
+      ),
     ).join("\n");
     const result = compact(many);
     expect(result.truncated).toBe(true);
     const rendered = renderCompacted(result);
     expect(rendered).toContain("truncated");
     // every touched path still appears in the numstat even when hunks are cut
-    const files = parseDiff(many).map((f) => f.newPath).filter((p): p is string => p !== null);
+    const files = parseDiff(many)
+      .map((f) => f.newPath)
+      .filter((p): p is string => p !== null);
     for (const path of files) {
       expect(rendered).toContain(path);
     }

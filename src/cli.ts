@@ -27,9 +27,9 @@ FLAGS:
 ${flagLine("--setup", "Run the setup wizard and exit")}
 ${flagLine("--no-commit", "Print the draft and exit without committing")}
 ${flagLine("--base-url <url>", "Override the API endpoint for this run")}
-${flagLine("--instructions \"<text>\"", "Steer the model for this run; outranks the template")}
+${flagLine('--instructions "<text>"', "Steer the model for this run; outranks the template")}
 ${flagLine("--style", "Add last ~8 commit subjects (opt-in; otherwise history is never read)")}
-${flagLine("--template \"<string>\"", "Override the commit template for this run")}
+${flagLine('--template "<string>"', "Override the commit template for this run")}
 ${flagLine("--provider <name>", "Override the provider for this run (openai, anthropic)")}
 ${flagLine("--model <name>", "Override the model for this run")}
 ${flagLine("-h, --help", "Show this help")}
@@ -37,25 +37,27 @@ ${flagLine("-h, --help", "Show this help")}
 Reads only staged changes; never stages anything.
 `;
 
-const VALUE_FLAGS: Readonly<Record<string, keyof CliFlags>> = {
-  "--base-url": "baseUrl",
-  "--instructions": "instructions",
-  "--template": "template",
-  "--provider": "provider",
-  "--model": "model",
-};
+type ValueFlagKey = "baseUrl" | "instructions" | "template" | "provider" | "model";
+type BooleanFlagKey = "help" | "setup" | "noCommit" | "style";
 
-const BOOLEAN_FLAGS: Readonly<Record<string, keyof CliFlags>> = {
-  "--no-commit": "noCommit",
-  "--style": "style",
-  "--setup": "setup",
-  "--help": "help",
-  "-h": "help",
-};
+const VALUE_FLAGS = new Map<string, ValueFlagKey>([
+  ["--base-url", "baseUrl"],
+  ["--instructions", "instructions"],
+  ["--template", "template"],
+  ["--provider", "provider"],
+  ["--model", "model"],
+]);
+
+const BOOLEAN_FLAGS = new Map<string, BooleanFlagKey>([
+  ["--no-commit", "noCommit"],
+  ["--style", "style"],
+  ["--setup", "setup"],
+  ["--help", "help"],
+  ["-h", "help"],
+]);
 
 export function parseArgs(args: readonly string[]): ParseResult {
-  const flags: Record<keyof Pick<CliFlags, "help" | "setup" | "noCommit" | "style">, boolean> &
-    Partial<Record<"baseUrl" | "instructions" | "template" | "provider" | "model", string>> = {
+  const flags: Record<BooleanFlagKey, boolean> & Partial<Record<ValueFlagKey, string>> = {
     help: false,
     setup: false,
     noCommit: false,
@@ -65,25 +67,25 @@ export function parseArgs(args: readonly string[]): ParseResult {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
 
-    const valueName = VALUE_FLAGS[arg];
+    const valueName = VALUE_FLAGS.get(arg);
     if (valueName !== undefined) {
       const value = args[i + 1];
       if (value === undefined || value.startsWith("-")) {
         return { ok: false, error: `flag ${arg} requires a value` };
       }
-      flags[valueName as "baseUrl"] = value;
+      flags[valueName] = value;
       i++;
       continue;
     }
 
-    const boolName = BOOLEAN_FLAGS[arg];
+    const boolName = BOOLEAN_FLAGS.get(arg);
     if (boolName !== undefined) {
-      (flags as Record<string, boolean>)[boolName] = true;
+      flags[boolName] = true;
       continue;
     }
 
     return { ok: false, error: `unknown flag: ${arg}` };
   }
 
-  return { ok: true, flags: flags as CliFlags };
+  return { ok: true, flags };
 }

@@ -75,7 +75,7 @@ async function installHook(workdir: string, name: string, script: string): Promi
   await chmod(path, 0o755);
 }
 
-function capture(): { stream: Pick<NodeJS.WriteStream, "write">; text: () => string } {
+function capture() {
   let buf = "";
   return {
     stream: {
@@ -111,7 +111,8 @@ describe("commit stage (ticket 08, sandboxed repos with real hooks)", () => {
 
   test("the accepted message is committed via git commit -F -, landing exactly", async () => {
     await stageFile("a.txt", "one\n");
-    const message = "feat(cli): accept loop commits\n\nBody kept verbatim through stdin.\n\nSigned-off-by: Test <test@example.com>";
+    const message =
+      "feat(cli): accept loop commits\n\nBody kept verbatim through stdin.\n\nSigned-off-by: Test <test@example.com>";
 
     const result = await commitAcceptedMessage(message, workdir);
 
@@ -139,7 +140,11 @@ describe("commit stage (ticket 08, sandboxed repos with real hooks)", () => {
   });
 
   test("prepare-commit-msg fires: a real hook's edit lands in the commit", async () => {
-    await installHook(workdir, "prepare-commit-msg", "#!/bin/sh\necho '' >> \"$1\"\necho 'Hook-Footer: prepared' >> \"$1\"\n");
+    await installHook(
+      workdir,
+      "prepare-commit-msg",
+      "#!/bin/sh\necho '' >> \"$1\"\necho 'Hook-Footer: prepared' >> \"$1\"\n",
+    );
     await stageFile("a.txt", "one\n");
 
     const result = await commitAcceptedMessage("feat: real prepare-commit-msg hook ran", workdir);
@@ -151,7 +156,11 @@ describe("commit stage (ticket 08, sandboxed repos with real hooks)", () => {
   });
 
   test("commit-msg fires: a hook that rejects the message kills the commit, loud", async () => {
-    await installHook(workdir, "commit-msg", "#!/bin/sh\necho 'commit-msg hook rejected: no plain chore' >&2\nexit 1\n");
+    await installHook(
+      workdir,
+      "commit-msg",
+      "#!/bin/sh\necho 'commit-msg hook rejected: no plain chore' >&2\nexit 1\n",
+    );
     await stageFile("a.txt", "one\n");
 
     const result = await commitAcceptedMessage("chore: hook bait", workdir);
@@ -176,7 +185,10 @@ describe("commit stage (ticket 08, sandboxed repos with real hooks)", () => {
       GIT_COMMITTER_NAME: "",
       GIT_COMMITTER_EMAIL: "",
     };
-    const proc = Bun.spawn(["git", "config", "--local", "--list"], { cwd: workdir, stdout: "pipe" });
+    const proc = Bun.spawn(["git", "config", "--local", "--list"], {
+      cwd: workdir,
+      stdout: "pipe",
+    });
     await proc.exited; // repo is fresh: no local identity either
 
     // `git commit -F -` with the env scrubbed of identity must fail, and
@@ -268,7 +280,11 @@ describe("commit stage (ticket 08, sandboxed repos with real hooks)", () => {
 
     test("a failing commit through main exits non-zero, swallows nothing, claims nothing", async () => {
       await stageFile("a.txt", "one\n");
-      await installHook(workdir, "commit-msg", "#!/bin/sh\necho 'commit-msg hook rejected message' >&2\nexit 1\n");
+      await installHook(
+        workdir,
+        "commit-msg",
+        "#!/bin/sh\necho 'commit-msg hook rejected message' >&2\nexit 1\n",
+      );
 
       const out = capture();
       const err = capture();

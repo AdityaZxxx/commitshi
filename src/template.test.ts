@@ -13,7 +13,11 @@ const TPL = DEFAULT_CONVENTIONAL_TEMPLATE; // "{type}{scope}: {summary}\n\n{body
 describe("parseTemplate", () => {
   test("accepts the conventional shape; type-first ⇒ conventional", () => {
     const r = parseTemplate(TPL);
-    expect(r).toEqual({ ok: true, kind: "conventional", tokens: ["type", "scope", "summary", "body"] });
+    expect(r).toEqual({
+      ok: true,
+      kind: "conventional",
+      tokens: ["type", "scope", "summary", "body"],
+    });
   });
   test("anything else ⇒ custom", () => {
     const custom = parseTemplate("{summary}");
@@ -48,7 +52,15 @@ describe("parseTemplate", () => {
 describe("segmentTemplate", () => {
   test("splits literals and tokens in order", () => {
     const segs = segmentTemplate("{type}({scope}): {summary}\n{body}");
-    expect(segs.map((s) => s.kind)).toEqual(["token", "literal", "token", "literal", "token", "literal", "token"]);
+    expect(segs.map((s) => s.kind)).toEqual([
+      "token",
+      "literal",
+      "token",
+      "literal",
+      "token",
+      "literal",
+      "token",
+    ]);
     expect(segs[0]).toMatchObject({ kind: "token", name: "type" });
     expect(segs[1]).toMatchObject({ kind: "literal", text: "(" });
   });
@@ -66,7 +78,8 @@ describe("strictFill — happy path (fill contract)", () => {
     const r = strictFill(TPL, out);
     expect(r).toEqual({
       ok: true,
-      message: "feat(auth): add a login flow\n\nReplaces the cookie stub with session-backed auth.\nSecond body line stays.",
+      message:
+        "feat(auth): add a login flow\n\nReplaces the cookie stub with session-backed auth.\nSecond body line stays.",
     });
   });
 
@@ -88,7 +101,10 @@ describe("strictFill — happy path (fill contract)", () => {
   });
 
   test("single-token template", () => {
-    expect(strictFill("{summary}", "summary: tighten the loop")).toEqual({ ok: true, message: "tighten the loop" });
+    expect(strictFill("{summary}", "summary: tighten the loop")).toEqual({
+      ok: true,
+      message: "tighten the loop",
+    });
   });
 
   test("prefix literal is preserved", () => {
@@ -102,12 +118,18 @@ describe("strictFill — happy path (fill contract)", () => {
   });
 
   test("a custom template's literal blank line survives render", () => {
-    const r = strictFill("{summary}\n\n{body}", "summary: tighten the loop\nbody: Because reasons.");
+    const r = strictFill(
+      "{summary}\n\n{body}",
+      "summary: tighten the loop\nbody: Because reasons.",
+    );
     expect(r).toEqual({ ok: true, message: "tighten the loop\n\nBecause reasons." });
   });
 
   test("a legacy custom template with literal parens renders them once (idempotent)", () => {
-    const r = strictFill("{type}({scope}): {summary}", "type: feat\nscope: auth\nsummary: add login helper");
+    const r = strictFill(
+      "{type}({scope}): {summary}",
+      "type: feat\nscope: auth\nsummary: add login helper",
+    );
     expect(r).toEqual({ ok: true, message: "feat(auth): add login helper" });
   });
 });
@@ -190,13 +212,17 @@ describe("buildPrompt — PromptPolicy integration", () => {
     const p = buildPrompt(DEFAULT_CONVENTIONAL_TEMPLATE);
     expect(p).toContain("GROUNDING POLICY");
     expect(p).toContain("Treat the provided diff as the source of truth for what changed");
-    expect(p).toContain("Use file names as authoritative evidence of which files are represented in the input");
+    expect(p).toContain(
+      "Use file names as authoritative evidence of which files are represented in the input",
+    );
     expect(p).toContain("COMMIT SEMANTICS");
     expect(p).toContain("Prefer the smallest accurate claim");
     expect(p).toContain("COMMIT TYPE");
     expect(p).toContain("Use feat for a new user-facing capability");
     expect(p).toContain("Use refactor for restructuring code without changing intended behavior");
-    expect(p).toContain("Do not choose feat merely because new code or functionality was added internally");
+    expect(p).toContain(
+      "Do not choose feat merely because new code or functionality was added internally",
+    );
     expect(p).toContain("USER INSTRUCTION POLICY");
     expect(p).toContain("may not introduce unsupported factual claims");
     expect(p).toContain("STYLE HISTORY POLICY");

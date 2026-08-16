@@ -8,27 +8,45 @@ export type InlineResult =
   | { ok: false; kind: "cancelled" }
   | { ok: false; kind: "empty-subject"; message: string };
 
+/**
+ * The terminal contract the editor runs on. The real process streams satisfy
+ * it fully; test doubles (a PassThrough, a capture) satisfy it structurally,
+ * so the seam needs no casts on either side. setRawMode is optional because
+ * only a real TTY has it — its absence is refused below, not worked around.
+ */
+export type EditorStdin = NodeJS.ReadableStream & {
+  isTTY?: boolean;
+  setRawMode?: (mode: boolean) => void;
+};
+
+export type EditorStdout = Pick<NodeJS.WriteStream, "write"> & {
+  isTTY?: boolean;
+  columns?: number;
+  getColorDepth?: () => number;
+};
+
 export async function run(
   initialDraft: string,
-  stdin: NodeJS.ReadStream,
-  stdout: NodeJS.WriteStream,
+  stdin: EditorStdin,
+  stdout: EditorStdout,
 ): Promise<InlineResult> {
   readline.emitKeypressEvents(stdin);
-  const rawSupported = stdin.isTTY && typeof (stdin as any).setRawMode === "function";
-  if (!rawSupported) {
+  // Bind once so the narrowed capability survives the await below.
+  const setRawMode = stdin.setRawMode?.bind(stdin);
+  if (!stdin.isTTY || setRawMode === undefined) {
     throw new Error("inline editor requires a TTY with setRawMode");
   }
   let rawEnabled = false;
 
   try {
-    (stdin as any).setRawMode(true);
+    setRawMode(true);
     rawEnabled = true;
     stdin.resume();
 
     let state = initialState(parseDraft(initialDraft));
     let active = true;
 
-    const columns = (stdout as any).columns;
+    const columns = stdout.columns;
     const render = () => {
       const lines = renderToLines(state, columns);
       stdout.write(clearScreen());
@@ -39,7 +57,7 @@ export async function run(
     render();
 
     const result = await new Promise<InlineResult>((resolve) => {
-      const onKey = (_str: string, key: any) => {
+      const onKey = (_str: string, key: readline.Key) => {
         if (!active) return;
         const k = normalizeKeypress(_str, key);
         const { state: nextState, done } = applyKey(state, k);
@@ -55,7 +73,11 @@ export async function run(
           const composed = composeDraft(state.draft);
           const subject = state.draft.subject.trim();
           if (!subject) {
-            resolve({ ok: false, kind: "empty-subject", message: "Subject is empty. Add a subject line, then press Ctrl+S to save." });
+            resolve({
+              ok: false,
+              kind: "empty-subject",
+              message: "Subject is empty. Add a subject line, then press Ctrl+S to save.",
+            });
             return;
           }
           resolve({ ok: true, text: composed });
@@ -84,11 +106,13 @@ export async function run(
     return result;
   } finally {
     // Cleanup order: listeners removed in Promise cleanup, then clear screen, then restore raw mode
-    try { stdout.write(clearScreen()); } catch {}
+    try {
+      stdout.write(clearScreen());
+    } catch {}
     if (rawEnabled) {
-      try { (stdin as any).setRawMode(false); } catch {}
+      try {
+        setRawMode(false);
+      } catch {}
     }
   }
 }
-
-

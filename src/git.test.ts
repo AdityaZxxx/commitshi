@@ -78,7 +78,15 @@ describe("recentCommitSubjects (ticket 10 — the --style seam)", () => {
     const repo = await freshRepo();
     await writeFile(join(repo, "a.txt"), "one\n");
     await git(repo, "add", "a.txt");
-    await git(repo, "commit", "-q", "-m", "feat: subject only", "-m", "body line one\nbody line two");
+    await git(
+      repo,
+      "commit",
+      "-q",
+      "-m",
+      "feat: subject only",
+      "-m",
+      "body line one\nbody line two",
+    );
     const subjects = await recentCommitSubjects(8, repo);
     expect(subjects).toEqual(["feat: subject only"]);
     await Promise.all(cleanup.map((fn) => fn()));
@@ -104,7 +112,13 @@ describe("recentCommitSubjects (ticket 10 — the --style seam)", () => {
 describe("no silent history reads (ticket 10 acceptance)", () => {
   test("`git log` appears only in git.ts (the seam), nowhere else in shipped code", async () => {
     // main.ts wires the seam; everything else must be silent.
-    for (const file of ["src/pipeline.ts", "src/loop.ts", "src/commit.ts", "src/compaction.ts", "src/config.ts"]) {
+    for (const file of [
+      "src/pipeline.ts",
+      "src/loop.ts",
+      "src/commit.ts",
+      "src/compaction.ts",
+      "src/config.ts",
+    ]) {
       const text = await readFile(file, "utf8");
       expect(text).not.toContain("git log");
       expect(text).not.toContain("recentCommitSubjects");

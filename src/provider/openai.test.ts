@@ -1,19 +1,18 @@
 import { describe, expect, test } from "bun:test";
-import { chatCompletions, type CompletionResult } from "./openai.ts";
+import { chatCompletions, type CompletionResult, type FetchFn } from "./openai.ts";
 
 /** A programmable fetch seam. */
-function fakeFetch(
-  impl: (url: string, init: RequestInit) => Promise<Response> | Response,
-): { fn: typeof fetch; calls: Array<{ url: string; init: RequestInit }> } {
+function fakeFetch(impl: (url: string, init: RequestInit) => Promise<Response> | Response) {
   const calls: Array<{ url: string; init: RequestInit }> = [];
-  const fn = (async (url: any, init: any) => {
-    calls.push({ url: String(url), init });
-    return impl(String(url), init);
-  }) as unknown as typeof fetch;
+  const fn: FetchFn = async (url, init) => {
+    const recorded = init ?? {};
+    calls.push({ url: String(url), init: recorded });
+    return await impl(String(url), recorded);
+  };
   return { fn, calls };
 }
 
-function jsonResponse(body: unknown, status = 200): Response {
+function jsonResponse<T>(body: T, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: { "content-type": "application/json" },
@@ -24,7 +23,9 @@ const REQ = { model: "m", messages: [{ role: "user" as const, content: "hi" }] }
 
 describe("openai adapter — request shape", () => {
   test("posts to {baseUrl}/chat/completions with the model and messages", async () => {
-    const { fn, calls } = fakeFetch(() => jsonResponse({ choices: [{ message: { content: "ok" } }] }));
+    const { fn, calls } = fakeFetch(() =>
+      jsonResponse({ choices: [{ message: { content: "ok" } }] }),
+    );
     const r = await chatCompletions({ baseUrl: "http://x:1/v1", fetchFn: fn }, REQ);
     expect(r).toEqual({ ok: true, content: "ok" });
     expect(calls[0].url).toBe("http://x:1/v1/chat/completions");
@@ -34,17 +35,23 @@ describe("openai adapter — request shape", () => {
   });
 
   test("sends Authorization only when a key is configured", async () => {
-    const { fn: withKey, calls: c1 } = fakeFetch(() => jsonResponse({ choices: [{ message: { content: "x" } }] }));
+    const { fn: withKey, calls: c1 } = fakeFetch(() =>
+      jsonResponse({ choices: [{ message: { content: "x" } }] }),
+    );
     await chatCompletions({ baseUrl: "http://h/v1", apiKey: "sk-test", fetchFn: withKey }, REQ);
     expect(new Headers(c1[0].init.headers).get("authorization")).toBe("Bearer sk-test");
 
-    const { fn: noKey, calls: c2 } = fakeFetch(() => jsonResponse({ choices: [{ message: { content: "x" } }] }));
+    const { fn: noKey, calls: c2 } = fakeFetch(() =>
+      jsonResponse({ choices: [{ message: { content: "x" } }] }),
+    );
     await chatCompletions({ baseUrl: "http://h/v1", fetchFn: noKey }, REQ);
     expect(new Headers(c2[0].init.headers).get("authorization")).toBeNull();
   });
 
   test("baseUrl is normalized: trailing slashes and a redundant suffix are dropped", async () => {
-    const { fn, calls } = fakeFetch(() => jsonResponse({ choices: [{ message: { content: "x" } }] }));
+    const { fn, calls } = fakeFetch(() =>
+      jsonResponse({ choices: [{ message: { content: "x" } }] }),
+    );
     await chatCompletions({ baseUrl: "http://h/v1///", fetchFn: fn }, REQ);
     expect(calls[0].url).toBe("http://h/v1/chat/completions");
   });
@@ -78,12 +85,18 @@ describe("openai adapter — failure handling", () => {
     const { fn } = fakeFetch(() => Promise.reject(new Error("ECONNREFUSED")));
     const r = await chatCompletions({ baseUrl: "http://h/v1", fetchFn: fn }, REQ);
     expect(r.ok).toBe(false);
-    if (!r.ok) expect((r as any).message).toContain("could not reach");
+    if (!r.ok) {
+      // SAFETY: every failure variant of CompletionResult carries a message.
+      expect((r as { message: string }).message).toContain("could not reach");
+    }
   });
 
   test("abort → timeout failure", async () => {
     const { fn } = fakeFetch(
-      () => new Promise<Response>((_res, rej) => setTimeout(() => rej(Object.assign(new Error("aborted"), { name: "AbortError" })), 20)),
+      () =>
+        new Promise<Response>((_res, rej) =>
+          setTimeout(() => rej(Object.assign(new Error("aborted"), { name: "AbortError" })), 20),
+        ),
     );
     const r = await chatCompletions({ baseUrl: "http://h/v1", fetchFn: fn, timeoutMs: 5 }, REQ);
     expect(r.ok).toBe(false);
@@ -94,7 +107,10 @@ describe("openai adapter — failure handling", () => {
     const { fn } = fakeFetch(() => jsonResponse({ choices: [{ message: {} }] }));
     const r = await chatCompletions({ baseUrl: "http://h/v1", fetchFn: fn }, REQ);
     expect(r.ok).toBe(false);
-    if (!r.ok) expect((r as any).message).toContain("no message content");
+    if (!r.ok) {
+      // SAFETY: every failure variant of CompletionResult carries a message.
+      expect((r as { message: string }).message).toContain("no message content");
+    }
   });
 });
 

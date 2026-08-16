@@ -43,8 +43,15 @@ const makeResolveBundle =
 
 const LOCAL_BASE = { baseUrl: "http://localhost:11434/v1" };
 
+/** Prompt fragments recorded by the chat stub for wire-level assertions. */
+type PromptCapture = { user?: string; system?: string };
+
+/** Wire fields recorded by the chat stub for provider-routing assertions. */
+type WireCapture = { baseUrl?: string; model?: string; apiKey?: string };
+
 /** A chat stub that records the prompt content and returns a canned fill-contract reply. */
-const makeRecordingChat = (reply: string, captured: { user?: string; system?: string }): PipelineDeps["chat"] =>
+const makeRecordingChat =
+  (reply: string, captured: PromptCapture): PipelineDeps["chat"] =>
   async (_deps, req) => {
     captured.system = req.messages[0]?.content ?? "";
     captured.user = req.messages[1]?.content ?? "";
@@ -62,7 +69,7 @@ const OK_REPLY = "type: feat\nscope: auth\nsummary: add login helper\nbody: -";
 
 describe("generateDraft — default prompt is untouched (regression from 05)", () => {
   test("no flags: user block and style block are absent, prompt is byte-stable", async () => {
-    const captured: { user?: string } = {};
+    const captured: PromptCapture = {};
     const deps: PipelineDeps = { ...baseDeps(), chat: makeRecordingChat(OK_REPLY, captured) };
     const first = await generateDraft(deps);
     expect(first.ok).toBe(true);
@@ -72,7 +79,7 @@ describe("generateDraft — default prompt is untouched (regression from 05)", (
 
     // Byte-identical across runs: the flag-less prompt is the ticket-05
     // shape — compact diff + fixed closing instruction, nothing else.
-    const again: { user?: string } = {};
+    const again: PromptCapture = {};
     await generateDraft({ ...baseDeps(), chat: makeRecordingChat(OK_REPLY, again) });
     expect(again.user).toBe(captured.user);
     // Contract: diff first, closing instruction last, and no
@@ -87,7 +94,7 @@ describe("generateDraft — default prompt is untouched (regression from 05)", (
 
 describe("generateDraft — --instructions (ticket 09)", () => {
   test("instructions land in the prompt as their own block, after the diff", async () => {
-    const captured: { user?: string } = {};
+    const captured: PromptCapture = {};
     const deps: PipelineDeps = {
       ...baseDeps(),
       chat: makeRecordingChat(OK_REPLY, captured),
@@ -99,11 +106,13 @@ describe("generateDraft — --instructions (ticket 09)", () => {
     expect(captured.user).toContain("always use the type 'refactor'");
     // Instruction policy: may influence wording/style but not factual claims
     expect(captured.user).toContain("may not introduce unsupported factual claims");
-    expect(captured.user!.indexOf("### Compact diff")).toBeLessThan(captured.user!.indexOf("### User instructions"));
+    expect(captured.user!.indexOf("### Compact diff")).toBeLessThan(
+      captured.user!.indexOf("### User instructions"),
+    );
   });
 
   test("instructions tell the model the strict shape still holds (no fifth token)", async () => {
-    const captured: { user?: string; system?: string } = {};
+    const captured: PromptCapture = {};
     const deps: PipelineDeps = {
       ...baseDeps(),
       chat: makeRecordingChat(OK_REPLY, captured),
@@ -119,19 +128,25 @@ describe("generateDraft — --instructions (ticket 09)", () => {
     // A single-token template: the un-wanted `notes:` line can absorb into
     // nothing, so strictFill rejects it as stray prose — instructions never
     // get a fifth token, whatever the model emitted.
-    const captured: { user?: string } = {};
+    const captured: PromptCapture = {};
     const deps: PipelineDeps = {
       ...baseDeps(),
-      chat: makeRecordingChat("summary: add the login helper\nnotes: extra the user demanded", captured),
+      chat: makeRecordingChat(
+        "summary: add the login helper\nnotes: extra the user demanded",
+        captured,
+      ),
       flags: { instructions: "also add a freeform notes paragraph after the message" },
     };
-    const result = await generateDraft({ ...deps, flags: { ...deps.flags, template: "{summary}" } });
+    const result = await generateDraft({
+      ...deps,
+      flags: { ...deps.flags, template: "{summary}" },
+    });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.message).toContain("template contract");
   });
 
   test("whitespace-only instructions omit the block entirely (empty = default)", async () => {
-    const captured: { user?: string } = {};
+    const captured: PromptCapture = {};
     const deps: PipelineDeps = {
       ...baseDeps(),
       chat: makeRecordingChat(OK_REPLY, captured),
@@ -147,7 +162,7 @@ describe("generateDraft — --template one-shot override (ticket 09)", () => {
   const COMMITTED = "{type}({scope}): {summary}";
 
   test("--template beats the configured template for that run only", async () => {
-    const captured: { user?: string } = {};
+    const captured: PromptCapture = {};
     const deps: PipelineDeps = {
       ...baseDeps({ template: COMMITTED }), // persisted config supplies COMMITTED…
       chat: makeRecordingChat("type: fix\nsummary: squash the flake", captured),
@@ -163,7 +178,7 @@ describe("generateDraft — --template one-shot override (ticket 09)", () => {
   });
 
   test("the configured template persists for later runs (flag is not written back)", async () => {
-    const captured: { user?: string } = {};
+    const captured: PromptCapture = {};
     // No --template flag: the committed template from config applies.
     const deps: PipelineDeps = {
       ...baseDeps({ template: COMMITTED }),
@@ -192,8 +207,12 @@ describe("generateDraft — --style (ticket 10)", () => {
   });
 
   test("--style includes the recent subjects as a block after the diff", async () => {
-    const subjects = ["feat(auth): add session cookie", "fix(ci): pin ubuntu runner", "chore: bump deps"];
-    const captured: { user?: string } = {};
+    const subjects = [
+      "feat(auth): add session cookie",
+      "fix(ci): pin ubuntu runner",
+      "chore: bump deps",
+    ];
+    const captured: PromptCapture = {};
     const deps: PipelineDeps = {
       ...baseDeps(),
       styleHistory: async () => subjects,
@@ -203,11 +222,13 @@ describe("generateDraft — --style (ticket 10)", () => {
     expect(result.ok).toBe(true);
     expect(captured.user).toContain("### Style history");
     for (const s of subjects) expect(captured.user).toContain(s);
-    expect(captured.user!.indexOf("### Compact diff")).toBeLessThan(captured.user!.indexOf("### Style history"));
+    expect(captured.user!.indexOf("### Compact diff")).toBeLessThan(
+      captured.user!.indexOf("### Style history"),
+    );
   });
 
   test("empty history (fresh repo) degrades gracefully — no block, draft still generates", async () => {
-    const captured: { user?: string } = {};
+    const captured: PromptCapture = {};
     const deps: PipelineDeps = {
       ...baseDeps(),
       styleHistory: async () => [], // fresh repo, unborn HEAD
@@ -220,7 +241,7 @@ describe("generateDraft — --style (ticket 10)", () => {
   });
 
   test("history read failure inside the seam degrades to no block, no crash", async () => {
-    const captured: { user?: string } = {};
+    const captured: PromptCapture = {};
     const deps: PipelineDeps = {
       ...baseDeps(),
       styleHistory: async () => {
@@ -236,7 +257,7 @@ describe("generateDraft — --style (ticket 10)", () => {
   });
 
   test("instructions and --style combine; both blocks appear, diff first", async () => {
-    const captured: { user?: string } = {};
+    const captured: PromptCapture = {};
     const deps: PipelineDeps = {
       ...baseDeps(),
       styleHistory: async () => ["chore: bump deps"],
@@ -247,7 +268,9 @@ describe("generateDraft — --style (ticket 10)", () => {
     expect(result.ok).toBe(true);
     expect(captured.user).toContain("### Style history");
     expect(captured.user).toContain("### User instructions");
-    expect(captured.user!.indexOf("### Compact diff")).toBeLessThan(captured.user!.indexOf("### Style history"));
+    expect(captured.user!.indexOf("### Compact diff")).toBeLessThan(
+      captured.user!.indexOf("### Style history"),
+    );
   });
 });
 
@@ -272,7 +295,7 @@ describe("generateDraft — template seam (ticket 15/16 hardening)", () => {
   });
 
   test("the system prompt carries the fill contract, worded by the template's tokens", async () => {
-    const captured: { system?: string } = {};
+    const captured: PromptCapture = {};
     await generateDraft({
       ...baseDeps(),
       chat: async (_d, req) => {
@@ -292,10 +315,10 @@ describe("generateDraft — template seam (ticket 15/16 hardening)", () => {
 describe("generateDraft — regenerate temperature (ticket r)", () => {
   // The chat stub captures the CompletionRequest so the wire-level temperature
   // is the assertion target — matches the existing prompt-content pattern.
-  const captureTemperature = (): { chat: PipelineDeps["chat"]; temperatures: number[] } => {
+  const captureTemperature = () => {
     const temperatures: number[] = [];
     const chat: PipelineDeps["chat"] = async (_d, req) => {
-      if (typeof req.temperature === "number") temperatures.push(req.temperature);
+      if (req.temperature !== undefined) temperatures.push(req.temperature);
       return { ok: true as const, content: OK_REPLY };
     };
     return { chat, temperatures };
@@ -340,7 +363,7 @@ describe("generateDraft — regenerate temperature (ticket r)", () => {
 
 describe("reviseDraft — PromptPolicy guards", () => {
   test("user prompt marks existing draft as candidate, not authority", async () => {
-    const captured: { user?: string } = {};
+    const captured: PromptCapture = {};
     const deps: PipelineDeps = {
       stagedDiff: async () => DIFF,
       resolveBundle: makeResolveBundle({ baseUrl: LOCAL_BASE.baseUrl }),
@@ -359,7 +382,7 @@ describe("reviseDraft — PromptPolicy guards", () => {
   });
 
   test("compact diff metadata about omission is present", async () => {
-    const captured: { user?: string } = {};
+    const captured: PromptCapture = {};
     const deps: PipelineDeps = {
       stagedDiff: async () => DIFF,
       resolveBundle: makeResolveBundle({ baseUrl: LOCAL_BASE.baseUrl }),
@@ -412,7 +435,7 @@ describe("generateDraft — provider anthropic (ticket 06)", () => {
   });
 
   test("the Anthropic call uses the Anthropic baseUrl and model defaults", async () => {
-    const captured: { baseUrl?: string; model?: string; apiKey?: string } = {};
+    const captured: WireCapture = {};
     const deps = anthropicDeps({
       anthropicChat: async (d, req) => {
         captured.baseUrl = d.baseUrl;
@@ -433,7 +456,7 @@ describe("generateDraft — provider anthropic (ticket 06)", () => {
   });
 
   test("prompt assembly is shared: the Anthropic call sees the same system + user prompt", async () => {
-    const captured: { system?: string; user?: string } = {};
+    const captured: PromptCapture = {};
     const deps = anthropicDeps({
       anthropicChat: async (_d, req) => {
         captured.system = req.messages[0]?.content ?? "";
@@ -463,21 +486,36 @@ describe("generateDraft — provider anthropic (ticket 06)", () => {
 
   test("failure semantics match 05: rate_limited and auth exit 3, server exits 1", async () => {
     const rateLimited = anthropicDeps({
-      anthropicChat: async () => ({ ok: false as const, kind: "rate_limited", status: 429, message: "slow down" }),
+      anthropicChat: async () => ({
+        ok: false as const,
+        kind: "rate_limited",
+        status: 429,
+        message: "slow down",
+      }),
     });
     const r1 = await generateDraft(rateLimited);
     expect(r1.ok).toBe(false);
     if (!r1.ok) expect(r1.exitCode).toBe(3);
 
     const auth = anthropicDeps({
-      anthropicChat: async () => ({ ok: false as const, kind: "auth", status: 401, message: "bad key" }),
+      anthropicChat: async () => ({
+        ok: false as const,
+        kind: "auth",
+        status: 401,
+        message: "bad key",
+      }),
     });
     const r2 = await generateDraft(auth);
     expect(r2.ok).toBe(false);
     if (!r2.ok) expect(r2.exitCode).toBe(3);
 
     const server = anthropicDeps({
-      anthropicChat: async () => ({ ok: false as const, kind: "server", status: 500, message: "boom" }),
+      anthropicChat: async () => ({
+        ok: false as const,
+        kind: "server",
+        status: 500,
+        message: "boom",
+      }),
     });
     const r3 = await generateDraft(server);
     expect(r3.ok).toBe(false);
@@ -559,7 +597,7 @@ describe("reviseDraft — provider anthropic (ticket 06)", () => {
   test("revise routes through the Anthropic transport with the same fill contract", async () => {
     let anthropicCalls = 0;
     let openaiCalls = 0;
-    const captured: { user?: string } = {};
+    const captured: PromptCapture = {};
     const deps: PipelineDeps = {
       stagedDiff: async () => DIFF,
       resolveBundle: makeResolveBundle({ provider: "anthropic" }),

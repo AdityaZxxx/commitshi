@@ -51,7 +51,7 @@ const OWNED_KEYS: readonly string[] = ["baseurl", "model", "openai_api_key"];
  * input survives across all three questions. Ctrl-C delivers its default
  * interrupt; nothing is written before the final write below.
  */
-function makeLineReader(stdin: NodeJS.ReadStream): { nextLine: NextLine; close: () => void } {
+function makeLineReader(stdin: NodeJS.ReadStream) {
   const queue: string[] = [];
   let partial = "";
   let closed = false;
@@ -125,11 +125,13 @@ export async function runSetup(
   stderr: Pick<typeof process.stderr, "write"> = process.stderr,
 ): Promise<SetupResult> {
   const stdinIsTTY = opts.stdinIsTTY ?? Boolean(process.stdin.isTTY);
+  // SAFETY: the production stdout is a WriteStream with isTTY; the write-only
+  // test seam reads undefined, which Boolean() maps to false.
   const stdoutIsTTY = opts.stdoutIsTTY ?? Boolean((stdout as NodeJS.WriteStream).isTTY);
   if (!stdinIsTTY || !stdoutIsTTY) {
     stderr.write(
       "commitshi: setup needs an interactive terminal (stdin and stdout must both be TTYs)\n" +
-      "  Set the config non-interactively instead: export OPENAI_API_KEY=..., or edit ~/.config/commitshi/config\n",
+        "  Set the config non-interactively instead: export OPENAI_API_KEY=..., or edit ~/.config/commitshi/config\n",
     );
     return { exitCode: 1 };
   }
@@ -137,15 +139,17 @@ export async function runSetup(
   const env = opts.env ?? process.env;
   const path = opts.configFilePath ?? defaultConfigFilePath(env);
   const existing = await readConfigFile(path);
-  const existingText = await readFile(path, "utf8")
-    .catch(() => ""); // absent file is a fresh write, not an error
+  const existingText = await readFile(path, "utf8").catch(() => ""); // absent file is a fresh write, not an error
 
   const currentUrl = existing.get("baseurl") ?? DEFAULT_BASE_URL;
   const currentKey = existing.get("openai_api_key") ?? "";
   const currentModel = existing.get("model") ?? DEFAULT_MODEL;
 
   const injected = opts.nextLine;
-  const reader = injected !== undefined ? { nextLine: injected, close: () => {} } : makeLineReader(process.stdin);
+  const reader =
+    injected !== undefined
+      ? { nextLine: injected, close: () => {} }
+      : makeLineReader(process.stdin);
   const { nextLine } = reader;
 
   const abort = (): SetupResult => {
@@ -184,10 +188,17 @@ export async function runSetup(
   // saving one would strand the user exactly where they started.
   let apiKey: string;
   if (isLocalBaseUrl(baseUrl)) {
-    const answer = await askField(stdout, nextLine, "API key (blank allowed for local endpoints)", currentKey);
+    const answer = await askField(
+      stdout,
+      nextLine,
+      "API key (blank allowed for local endpoints)",
+      currentKey,
+    );
     if (answer === null) return abort();
     if (answer !== "") {
-      stdout.write("  note: a key is never sent to local endpoints — it is stored for future non-local use\n");
+      stdout.write(
+        "  note: a key is never sent to local endpoints — it is stored for future non-local use\n",
+      );
     }
     apiKey = answer;
   } else {
@@ -195,7 +206,9 @@ export async function runSetup(
       const answer = await askField(stdout, nextLine, "API key", currentKey);
       if (answer === null) return abort();
       if (answer === "") {
-        stdout.write(`  A non-local endpoint (${baseUrl}) needs an API key — enter one, or press Ctrl-C to abort\n`);
+        stdout.write(
+          `  A non-local endpoint (${baseUrl}) needs an API key — enter one, or press Ctrl-C to abort\n`,
+        );
         continue;
       }
       apiKey = answer;
@@ -246,14 +259,20 @@ export async function runSetup(
     }
   }
 
-  const text = existingText === "" ? formatConfigFile(Object.fromEntries(entries)) : updateConfigText(existingText, entries);
+  const text =
+    existingText === ""
+      ? formatConfigFile(Object.fromEntries(entries))
+      : updateConfigText(existingText, entries);
   try {
     await mkdir(dirname(path), { recursive: true });
     // The single write: this is the only place in shipped code a config file lands.
     await writeFile(path, text, "utf8");
   } catch (error) {
     reader.close();
-    stderr.write(`commitshi: could not write ${path}: ${(error as Error).message} — config not written\n`);
+    stderr.write(
+      // SAFETY: fs failures surface as Error instances.
+      `commitshi: could not write ${path}: ${(error as Error).message} — config not written\n`,
+    );
     return { exitCode: 1 };
   }
 

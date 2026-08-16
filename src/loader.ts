@@ -23,10 +23,13 @@ const FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "
 /** How fast the spinner advances. 80ms reads as alive without flicker. */
 const INTERVAL_MS = 80;
 
+/** Opaque timer handle, typed by the runtime's own setInterval/clearInterval pair. */
+export type IntervalHandle = ReturnType<typeof setInterval>;
+
 export type LoaderClock = Readonly<{
   now?: () => number;
-  setIntervalFn?: (cb: () => void, ms: number) => unknown;
-  clearIntervalFn?: (handle: unknown) => void;
+  setIntervalFn?: (cb: () => void, ms: number) => IntervalHandle;
+  clearIntervalFn?: (handle: IntervalHandle) => void;
 }>;
 
 export type Loader = Readonly<{
@@ -37,7 +40,7 @@ export type Loader = Readonly<{
 const defaultClock: Required<LoaderClock> = {
   now: () => Date.now(),
   setIntervalFn: (cb, ms) => setInterval(cb, ms),
-  clearIntervalFn: (h) => clearInterval(h as Parameters<typeof clearInterval>[0]),
+  clearIntervalFn: (h) => clearInterval(h),
 };
 
 const HIDE_CURSOR = "\x1b[?25l";
@@ -51,7 +54,7 @@ const ERASE_LINE = "\r\x1b[K";
  */
 export function startLoader(
   label: string,
-  write: (s: string) => unknown,
+  write: (s: string) => void,
   isTTY: boolean,
   clock: LoaderClock = {},
 ): Loader {

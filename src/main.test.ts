@@ -3,12 +3,9 @@ import { realpathSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { main } from "./main.ts";
+import { main, type MainDeps } from "./main.ts";
 
-function capture(): {
-  stream: Pick<typeof process.stdout, "write">;
-  text: () => string;
-} {
+function capture() {
   let buf = "";
   return {
     stream: {
@@ -46,7 +43,15 @@ describe("main", () => {
     const err = capture();
     const code = await main(["--help"], out.stream, err.stream);
     expect(code).toBe(0);
-    for (const flag of ["--no-commit", "--instructions", "--template", "--provider", "--model", "--setup", "--base-url"]) {
+    for (const flag of [
+      "--no-commit",
+      "--instructions",
+      "--template",
+      "--provider",
+      "--model",
+      "--setup",
+      "--base-url",
+    ]) {
       expect(out.text()).toContain(flag);
     }
     expect(err.text()).toBe("");
@@ -203,11 +208,17 @@ describe("main", () => {
         },
         chat: async () => {
           openaiCalls++;
-          return { ok: true as const, content: "type: feat\nscope: -\nsummary: add a.txt\nbody: -" };
+          return {
+            ok: true as const,
+            content: "type: feat\nscope: -\nsummary: add a.txt\nbody: -",
+          };
         },
         anthropicChat: async () => {
           anthropicCalls++;
-          return { ok: true as const, content: "type: feat\nscope: -\nsummary: add a.txt\nbody: -" };
+          return {
+            ok: true as const,
+            content: "type: feat\nscope: -\nsummary: add a.txt\nbody: -",
+          };
         },
       });
       expect(code).toBe(0);
@@ -229,7 +240,10 @@ describe("main", () => {
           configFilePath: join(workdir, "no-such-config"),
           gitConfigGet: async () => null,
         },
-        anthropicChat: async () => ({ ok: true as const, content: "type: feat\nscope: -\nsummary: x\nbody: -" }),
+        anthropicChat: async () => ({
+          ok: true as const,
+          content: "type: feat\nscope: -\nsummary: x\nbody: -",
+        }),
       });
       expect(code).toBe(1);
       expect(err.text()).toContain("ANTHROPIC_API_KEY");
@@ -243,7 +257,10 @@ describe("main", () => {
       let i = 0;
       return async () => (i < answers.length ? answers[i++] : null);
     };
-    const interactive = (answers: readonly (string | null)[], extra: Record<string, unknown> = {}) => ({
+    const interactive = (
+      answers: readonly (string | null)[],
+      extra: Partial<NonNullable<MainDeps["loop"]>> = {},
+    ) => ({
       ask: scriptedAsk(answers),
       stdinIsTTY: true,
       stdoutIsTTY: true,
@@ -316,7 +333,10 @@ describe("main", () => {
       let calls = 0;
       const chat = async () => {
         calls++;
-        return { ok: true as const, content: `type: feat\nscope: -\nsummary: draft ${calls}\nbody: -` };
+        return {
+          ok: true as const,
+          content: `type: feat\nscope: -\nsummary: draft ${calls}\nbody: -`,
+        };
       };
       const out = capture();
       const err = capture();
@@ -341,7 +361,7 @@ describe("main", () => {
       await stageA();
       const temperatures: number[] = [];
       const chat: import("./pipeline.ts").PipelineDeps["chat"] = async (_d, req) => {
-        if (typeof req.temperature === "number") temperatures.push(req.temperature);
+        if (req.temperature !== undefined) temperatures.push(req.temperature);
         return { ok: true as const, content: "type: feat\nscope: -\nsummary: x\nbody: -" };
       };
       const out = capture();
@@ -396,11 +416,19 @@ describe("main", () => {
       let seenUser = "";
       const chat: import("./pipeline.ts").PipelineDeps["chat"] = async (_d, req) => {
         seenUser = req.messages[1]?.content ?? "";
-        return { ok: true as const, content: "type: chore\nscope: -\nsummary: tidy the a.txt file\nbody: -" };
+        return {
+          ok: true as const,
+          content: "type: chore\nscope: -\nsummary: tidy the a.txt file\nbody: -",
+        };
       };
-      const code = await main(["--no-commit", "--instructions", "treat this as a chore, not a feature"], out.stream, err.stream, {
-        chat,
-      });
+      const code = await main(
+        ["--no-commit", "--instructions", "treat this as a chore, not a feature"],
+        out.stream,
+        err.stream,
+        {
+          chat,
+        },
+      );
       expect(code).toBe(0);
       expect(seenUser).toContain("### User instructions");
       expect(seenUser).toContain("treat this as a chore");
@@ -414,12 +442,9 @@ describe("main", () => {
       await stageA();
       const out = capture();
       const err = capture();
-      const code = await main(
-        ["--no-commit", "--template", "{summary}"],
-        out.stream,
-        err.stream,
-        { chat: async () => ({ ok: true as const, content: "summary: just the summary line" }) },
-      );
+      const code = await main(["--no-commit", "--template", "{summary}"], out.stream, err.stream, {
+        chat: async () => ({ ok: true as const, content: "summary: just the summary line" }),
+      });
       expect(code).toBe(0);
       expect(out.text()).toContain("just the summary line");
       expect(out.text()).not.toContain("feat:");
@@ -432,12 +457,17 @@ describe("main", () => {
       const out = capture();
       const err = capture();
       let chatCalls = 0;
-      const code = await main(["--no-commit", "--template", "{wat}: {summary}"], out.stream, err.stream, {
-        chat: async () => {
-          chatCalls++;
-          return { ok: true as const, content: "summary: x" };
+      const code = await main(
+        ["--no-commit", "--template", "{wat}: {summary}"],
+        out.stream,
+        err.stream,
+        {
+          chat: async () => {
+            chatCalls++;
+            return { ok: true as const, content: "summary: x" };
+          },
         },
-      });
+      );
       expect(code).toBe(2);
       expect(chatCalls).toBe(0);
       expect(err.text()).toContain("template is invalid");
@@ -478,7 +508,10 @@ describe("main", () => {
       let seenUser = "";
       const chat: import("./pipeline.ts").PipelineDeps["chat"] = async (_d, req) => {
         seenUser = req.messages[1]?.content ?? "";
-        return { ok: true as const, content: "type: feat\nscope: cli\nsummary: add b.txt\nbody: -" };
+        return {
+          ok: true as const,
+          content: "type: feat\nscope: cli\nsummary: add b.txt\nbody: -",
+        };
       };
       const out = capture();
       const err = capture();

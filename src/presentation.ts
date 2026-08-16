@@ -61,8 +61,10 @@ export function resolveColors(enabled: boolean, getColorDepth?: () => number): C
   return { enabled, palette: depth >= 24 ? TRUECOLOR : ANSI256 };
 }
 
-const role = (gate: ColorGate, code: keyof Palette) => (s: string): string =>
-  gate.enabled ? `${gate.palette[code]}${s}${RESET}` : s;
+const role =
+  (gate: ColorGate, code: keyof Palette) =>
+  (s: string): string =>
+    gate.enabled ? `${gate.palette[code]}${s}${RESET}` : s;
 
 /** Grey — section labels ("─── staged changes ───"), the prompt wrapper. */
 export const muted = (gate: ColorGate, s: string): string => role(gate, "muted")(s);
@@ -70,10 +72,6 @@ export const muted = (gate: ColorGate, s: string): string => role(gate, "muted")
 export const accent = (gate: ColorGate, s: string): string => role(gate, "accent")(s);
 /** Amber — the (truncated) badge only. */
 export const warn = (gate: ColorGate, s: string): string => role(gate, "warn")(s);
-
-
-
-
 
 /**
  * The prompt wrapper is muted. The PROMPT literal itself owns the visual
@@ -89,12 +87,13 @@ function mutedPrompt(prompt: string, colors: ColorGate): string {
 /** Renders the numstat block: two-space indent, right-ish aligned by path
  *  width. When `columns` is given and the block would overflow, paths are
  *  ellipsized at the start — counts are the data, they never truncate. */
-export function renderNumstat(entries: readonly NumstatEntry[], columns?: number, colors?: ColorGate): string[] {
+export function renderNumstat(entries: readonly NumstatEntry[], columns?: number): string[] {
   if (entries.length === 0) return [];
   const render = (e: NumstatEntry, width: number) => {
-    const p = width < e.path.length
-      ? `${e.path.slice(0, Math.max(0, Math.floor((width - 4) / 2)))}…${e.path.slice(-Math.max(0, Math.ceil((width - 4) / 2)))}`
-      : e.path;
+    const p =
+      width < e.path.length
+        ? `${e.path.slice(0, Math.max(0, Math.floor((width - 4) / 2)))}…${e.path.slice(-Math.max(0, Math.ceil((width - 4) / 2)))}`
+        : e.path;
     return `${p.padEnd(width)}   ${e.binary ? "binary" : `+${e.added} -${e.removed}`}`;
   };
   const pathWidth = Math.max(...entries.map((e) => e.path.length));
@@ -152,14 +151,18 @@ export function presentDraft(stdout: Pick<NodeJS.WriteStream, "write">, opts: Pr
   // second line — so a re-presentation after a regeneration doesn't re-print it.
   out.push(`\nSTAGED CHANGES${opts.truncated ? " (truncated)" : ""}`);
   const numstatLines = renderNumstat(opts.numstat, opts.columns);
-  out.push(...numstatLines.map(l => {
-    if (!colors.enabled) return l;
-    return l.replace(/(\+\d+)/g, (_, m) => accent(colors, m)).replace(/(-\d+)/g, (_, m) => warn(colors, m));
-  }));
+  out.push(
+    ...numstatLines.map((l) => {
+      if (!colors.enabled) return l;
+      return l
+        .replace(/(\+\d+)/g, (_, m) => accent(colors, m))
+        .replace(/(-\d+)/g, (_, m) => warn(colors, m));
+    }),
+  );
   // Resolved-state summary: what target the CLI found
   if (opts.numstat.length > 0) {
     const count = opts.numstat.length;
-    out.push(muted(colors, `Files staged  ${count} file${count === 1 ? '' : 's'}`));
+    out.push(muted(colors, `Files staged  ${count} file${count === 1 ? "" : "s"}`));
   }
 
   // (edited) / (revised) badge keeps the same draft number — edits and revisions don't increment it;

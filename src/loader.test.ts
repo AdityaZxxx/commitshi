@@ -7,30 +7,32 @@ import { describe, expect, test } from "bun:test";
 import { startLoader, type LoaderClock } from "./loader.ts";
 
 /** A write() seam that captures every chunk so tests can assert ordering. */
-function makeSink(): { chunks: string[]; write: (s: string) => boolean } {
+function makeSink() {
   const chunks: string[] = [];
   return { chunks, write: (s: string) => (chunks.push(s), true) };
 }
 
 /** A controllable clock + interval pair; tests step time manually. */
-function makeClock(): {
-  clock: LoaderClock;
-  tick: (ms: number) => void;
-  runInterval: () => void;
-} {
+function makeClock() {
   let t = 0;
   let intervalCb: (() => void) | undefined;
-  return {
-    clock: {
-      now: () => t,
-      setIntervalFn: (cb: () => void, _ms: number) => {
-        intervalCb = cb;
-        return 1 as unknown as ReturnType<typeof setInterval>;
-      },
-      clearIntervalFn: () => {
-        intervalCb = undefined;
-      },
+  const clock: LoaderClock = {
+    now: () => t,
+    setIntervalFn: (cb: () => void, _ms: number) => {
+      intervalCb = cb;
+      // A real timer satisfies IntervalHandle; unref + huge delay keep it
+      // inert — tests drive ticks manually via runInterval().
+      const handle = setInterval(() => {}, 1e9);
+      handle.unref?.();
+      return handle;
     },
+    clearIntervalFn: (handle) => {
+      intervalCb = undefined;
+      clearInterval(handle);
+    },
+  };
+  return {
+    clock,
     tick: (ms: number) => {
       t += ms;
     },

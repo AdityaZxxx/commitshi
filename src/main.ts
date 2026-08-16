@@ -1,7 +1,12 @@
-import { parseArgs, USAGE, type CliFlags } from "./cli.ts";
+import { parseArgs, USAGE } from "./cli.ts";
 import { guardStagedChanges, recentCommitSubjects, stagedDiff } from "./git.ts";
 import { makeResolveApiKey, resolveBundle, type Deps } from "./config.ts";
-import { DEFAULT_BASE_URL, generateDraft, reviseDraft, setRegenerateTemperatureOverride, type PipelineDeps } from "./pipeline.ts";
+import {
+  generateDraft,
+  reviseDraft,
+  setRegenerateTemperatureOverride,
+  type PipelineDeps,
+} from "./pipeline.ts";
 import { interactLoop, type AskKey, type DraftAttempt } from "./loop.ts";
 import { commitAcceptedMessage, type CommitResult } from "./commit.ts";
 import { runSetup } from "./setup.ts";
@@ -26,7 +31,10 @@ export type MainDeps = Readonly<{
   /** Config seams for tests; production resolves env + the default file path. */
   config?: Deps;
   /** Wizard body seam (tests): replaces the wizard outright, standalone and mid-run. */
-  setup?: (out: Pick<typeof process.stdout, "write">, err: Pick<typeof process.stderr, "write">) => Promise<{ exitCode: number }>;
+  setup?: (
+    out: Pick<typeof process.stdout, "write">,
+    err: Pick<typeof process.stderr, "write">,
+  ) => Promise<{ exitCode: number }>;
   /** Wizard option seam: replaces the options runSetup receives when the
    *  pipeline reports a missing key mid-run (tests inject nextLine etc.). */
   setupInput?: Parameters<typeof runSetup>[0];
@@ -80,6 +88,7 @@ export async function main(
   try {
     guard = await guardStagedChanges();
   } catch (error) {
+    // SAFETY: guardStagedChanges rejects with Error instances from runGit.
     stderr.write(`commitshi: error: ${(error as Error).message}\n`);
     return 1;
   }
@@ -90,9 +99,7 @@ export async function main(
 
   // Generate the first commit draft. The provider call and git reads are the
   // only IO; the model is the only stage that can fail here.
-  const attemptFrom = (
-    result: Awaited<ReturnType<typeof generateDraft>>,
-  ): DraftAttempt =>
+  const attemptFrom = (result: Awaited<ReturnType<typeof generateDraft>>): DraftAttempt =>
     result.ok
       ? { ok: true, draft: result.message, truncated: result.truncated, numstat: result.numstat }
       : { ok: false, exitCode: result.exitCode, message: result.message };
@@ -123,20 +130,29 @@ export async function main(
   // interactive TTY (and not --no-commit) → run the wizard, draft once more;
   // otherwise the result's message is printed and its exit code used.
   const loaderStream = flags.noCommit ? stderr : stdout;
-  const firstLoader = startLoader('generating draft…', (s) => loaderStream.write(s), stdoutIsTTY);
+  const firstLoader = startLoader("generating draft…", (s) => loaderStream.write(s), stdoutIsTTY);
   let firstResult: Awaited<ReturnType<typeof runPipeline>>;
   try {
     firstResult = await runPipeline();
   } finally {
     firstLoader.stop();
   }
-  if (!firstResult.ok && firstResult.kind === "missing-key" && !flags.noCommit && stdinIsTTY && stdoutIsTTY) {
+  if (
+    !firstResult.ok &&
+    firstResult.kind === "missing-key" &&
+    !flags.noCommit &&
+    stdinIsTTY &&
+    stdoutIsTTY
+  ) {
     const code =
       deps.setup !== undefined
         ? (await deps.setup(stdout, stderr)).exitCode
         : (
             await runSetup(
-              deps.setupInput ?? { env: deps.config?.env, configFilePath: deps.config?.configFilePath },
+              deps.setupInput ?? {
+                env: deps.config?.env,
+                configFilePath: deps.config?.configFilePath,
+              },
               stdout,
               stderr,
             )
@@ -155,7 +171,9 @@ export async function main(
       return first.exitCode;
     }
     if (first.truncated) {
-      stderr.write("commitshi: note — the staged diff exceeded the digest budget; the model saw a truncated digest\n");
+      stderr.write(
+        "commitshi: note — the staged diff exceeded the digest budget; the model saw a truncated digest\n",
+      );
     }
     stdout.write(`${first.draft}\n`);
     return 0;
@@ -225,7 +243,9 @@ export async function main(
   // commit. The tool never stages anything, and a failing commit exits
   // non-zero with git's own message — no swallowed draft, no claimed
   // success.
-  const committed = await (deps.commit ?? ((message: string) => commitAcceptedMessage(message)))(outcome.draft);
+  const committed = await (deps.commit ?? ((message: string) => commitAcceptedMessage(message)))(
+    outcome.draft,
+  );
   if (!committed.ok) {
     stderr.write(`\n${committed.message}\n`);
     return committed.exitCode;
@@ -238,7 +258,7 @@ export async function main(
   } catch {
     /* ignore */
   }
-  const subject = outcome.draft.split("\n").find(l => l.trim() !== "") ?? "";
+  const subject = outcome.draft.split("\n").find((l) => l.trim() !== "") ?? "";
   stdout.write(`\nCommitted as #${shortHash}\n`);
   if (subject) {
     stdout.write(`${subject}\n`);

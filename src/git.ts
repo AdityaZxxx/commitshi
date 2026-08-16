@@ -17,11 +17,15 @@ async function runGit(args: readonly string[], cwd: string): Promise<string> {
     });
     return stdout;
   } catch (cause) {
+    // SAFETY: execFile rejects with a Node ErrnoException; `code` distinguishes
+    // a missing git binary (ENOENT) from any in-repo git failure.
     const err = cause as NodeJS.ErrnoException;
     if (err.code === "ENOENT") {
       throw new Error("git not found on PATH — commitshi runs inside a git repository");
     }
-    throw new Error("not a git repository (or git failed) — commitshi reads staged changes in a repo");
+    throw new Error(
+      "not a git repository (or git failed) — commitshi reads staged changes in a repo",
+    );
   }
 }
 

@@ -15,9 +15,8 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
 
 describe("gitConfigGet", () => {
   test("extracts repo > global from a dump line and lowercases the key", async () => {
-    const run = config.makeGitConfigGet(
-      async (scope) =>
-        scope === "repo" ? `commitshi.model\tgpt-repo` : `commitshi.model\tgpt-global`,
+    const run = config.makeGitConfigGet(async (scope) =>
+      scope === "repo" ? `commitshi.model\tgpt-repo` : `commitshi.model\tgpt-global`,
     );
     expect(await run("commitshi.model")).toEqual({ value: "gpt-repo", source: "repo git-config" });
     const repoless = config.makeGitConfigGet(async (scope) =>
@@ -169,7 +168,11 @@ describe("resolveBundle", () => {
       const file = join(dir, "config");
       await writeFile(file, "provider=anthropic\nmodel=file-model\n");
       const bundle = await config.resolveBundle(
-        { env: { COMMITSHI_MODEL: "env-model" }, configFilePath: file, gitConfigGet: async () => null },
+        {
+          env: { COMMITSHI_MODEL: "env-model" },
+          configFilePath: file,
+          gitConfigGet: async () => null,
+        },
         {},
       );
       expect(bundle.provider).toEqual({ value: "anthropic", source: "config file" });

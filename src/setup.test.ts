@@ -24,10 +24,7 @@ async function exec(cmd: string, args: readonly string[], cwd: string): Promise<
   await execFileAsync(cmd, args, { cwd });
 }
 
-function capture(): {
-  stream: Pick<typeof process.stdout, "write">;
-  text: () => string;
-} {
+function capture() {
   let buf = "";
   return {
     stream: {
@@ -186,7 +183,10 @@ describe("runSetup — the one config-write path (ticket 11)", () => {
 
   test("re-run prefills the existing values and overwrite-on-confirm updates only what changed", async () => {
     const { configPath } = await sandbox();
-    await Bun.write(configPath, "baseurl = https://old.example.com/v1\nmodel = old-model\nopenai_api_key = sk-old\n"); // seed: dir + file, as a prior wizard run left them
+    await Bun.write(
+      configPath,
+      "baseurl = https://old.example.com/v1\nmodel = old-model\nopenai_api_key = sk-old\n",
+    ); // seed: dir + file, as a prior wizard run left them
     // The wizard owns creating the dir; the seed above stands in for a prior run.
     const out = capture();
     const result = await runSetup(
@@ -206,12 +206,17 @@ describe("runSetup — the one config-write path (ticket 11)", () => {
     expect(out.text()).toContain("[old-model]");
     expect(out.text()).toContain("Overwrite");
     const text = await readFile(configPath, "utf8");
-    expect(text).toBe("baseurl = https://new.example.com/v1\nmodel = new-model\nopenai_api_key = sk-old\n");
+    expect(text).toBe(
+      "baseurl = https://new.example.com/v1\nmodel = new-model\nopenai_api_key = sk-old\n",
+    );
   });
 
   test("rejecting the overwrite leaves the existing file byte-identical", async () => {
     const { configPath } = await sandbox();
-    await Bun.write(configPath, "baseurl = https://old.example.com/v1\nmodel = old-model\nopenai_api_key = sk-old\n");
+    await Bun.write(
+      configPath,
+      "baseurl = https://old.example.com/v1\nmodel = old-model\nopenai_api_key = sk-old\n",
+    );
     const result = await runSetup(
       {
         stdinIsTTY: true,
@@ -225,7 +230,9 @@ describe("runSetup — the one config-write path (ticket 11)", () => {
     );
     expect(result.exitCode).toBe(0);
     const text = await readFile(configPath, "utf8");
-    expect(text).toBe("baseurl = https://old.example.com/v1\nmodel = old-model\nopenai_api_key = sk-old\n");
+    expect(text).toBe(
+      "baseurl = https://old.example.com/v1\nmodel = old-model\nopenai_api_key = sk-old\n",
+    );
   });
 
   test("the wizard never clobbers keys it does not own; comments survive a re-run", async () => {
@@ -273,7 +280,6 @@ describe("runSetup — the one config-write path (ticket 11)", () => {
 });
 
 describe("auto-trigger (tickets 11/14): missing-key draft result → wizard → retry", () => {
-
   test("--setup standalone: runs outside a git repo, writes the config, exits 0 without touching the staged guard", async () => {
     const { configPath } = await sandbox();
     const out = capture();
@@ -310,7 +316,10 @@ describe("auto-trigger (tickets 11/14): missing-key draft result → wizard → 
       const code = await main([], out.stream, err.stream, {
         chat: async () => {
           chatCalls++;
-          return { ok: true as const, content: "type: feat\nscope: -\nsummary: add a.txt\nbody: -" };
+          return {
+            ok: true as const,
+            content: "type: feat\nscope: -\nsummary: add a.txt\nbody: -",
+          };
         },
         config: { configFilePath: configPath, env: {}, gitConfigGet: async () => null },
         stdinIsTTY: true,
@@ -361,7 +370,10 @@ describe("auto-trigger (tickets 11/14): missing-key draft result → wizard → 
         {
           chat: async () => {
             chatCalls++;
-            return { ok: true as const, content: "type: feat\nscope: -\nsummary: add a.txt\nbody: -" };
+            return {
+              ok: true as const,
+              content: "type: feat\nscope: -\nsummary: add a.txt\nbody: -",
+            };
           },
           config: {
             configFilePath: configPath,
@@ -405,7 +417,11 @@ describe("auto-trigger (tickets 11/14): missing-key draft result → wizard → 
           chatCalls++;
           return { ok: true as const, content: "type: feat\nscope: -\nsummary: x\nbody: -" };
         },
-        config: { configFilePath: configPath, env: { OPENAI_API_KEY: "sk-ci" }, gitConfigGet: async () => null },
+        config: {
+          configFilePath: configPath,
+          env: { OPENAI_API_KEY: "sk-ci" },
+          gitConfigGet: async () => null,
+        },
         stdinIsTTY: false,
         stdoutIsTTY: true,
         setup: async () => {
@@ -477,7 +493,7 @@ describe("no config writes outside the setup wizard (ticket 11 acceptance)", () 
     // The "never in git config" invariant: no git subprocess, no config-set.
     expect(text).not.toContain('"config", "--local"');
     expect(text).not.toContain('"config", "--global"');
-    expect(text).not.toContain("execFileAsync(\"git\"");
-    expect(text).not.toContain("Bun.spawn([\"git\"");
+    expect(text).not.toContain('execFileAsync("git"');
+    expect(text).not.toContain('Bun.spawn(["git"');
   });
 });

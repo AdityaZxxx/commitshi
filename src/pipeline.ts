@@ -32,18 +32,21 @@ export type PipelineDeps = Readonly<{
   /** The one config seam: resolves the draft-facing bundle
    * (provider/baseUrl/model/template over the injected flags) in a single
    * pass. Production wires config.ts's `resolveBundle`; tests stub it. */
-  resolveBundle: (
-    flags?: Partial<Record<string, string | undefined>>,
-  ) => Promise<ConfigBundle>;
+  resolveBundle: (flags?: Partial<Record<string, string | undefined>>) => Promise<ConfigBundle>;
   /** Resolves the API key for a named provider. */
-  resolveApiKey: (provider: Provider) => Promise<Readonly<{ value: string; source: string }> | null>;
+  resolveApiKey: (
+    provider: Provider,
+  ) => Promise<Readonly<{ value: string; source: string }> | null>;
   /** Environment seam for the pipeline's own legacy-env fallbacks
    * (OPENAI_BASE_URL / OPENAI_API_KEY); tests inject a hermetic env so a
    * developer's exported vars can't leak into the key-demand check. */
   env?: NodeJS.ProcessEnv;
   chat?: (deps: ChatDeps, req: Parameters<typeof chatCompletions>[1]) => Promise<CompletionResult>;
   /** Anthropic transport seam (tests); production wires provider/anthropic.ts's `anthropicMessages`. */
-  anthropicChat?: (deps: Parameters<typeof anthropicMessages>[0], req: Parameters<typeof anthropicMessages>[1]) => Promise<CompletionResult>;
+  anthropicChat?: (
+    deps: Parameters<typeof anthropicMessages>[0],
+    req: Parameters<typeof anthropicMessages>[1],
+  ) => Promise<CompletionResult>;
   /** One-shot CLI overrides, applied at the top of the precedence chain. None are ever persisted. */
   flags?: Readonly<{
     model?: string;
@@ -93,6 +96,8 @@ export const SUPPORTED_PROVIDERS: readonly Provider[] = ["openai", "anthropic"];
 /** Normalizes a provider name for matching; unknown strings stay unknown. */
 function normalizeProvider(value: string): Provider | null {
   const v = value.trim().toLowerCase();
+  // SAFETY: membership in SUPPORTED_PROVIDERS was just checked; the assertion
+  // only recovers the Provider literal the includes() call proved.
   return (SUPPORTED_PROVIDERS as readonly string[]).includes(v) ? (v as Provider) : null;
 }
 
@@ -126,7 +131,10 @@ type ContextOutcome =
  * non-local baseUrl demands one. Keys keep their own seam — they never
  * consult git config, unlike the bundle.
  */
-async function resolveCallContext(deps: PipelineDeps, bundle: ConfigBundle): Promise<ContextOutcome> {
+async function resolveCallContext(
+  deps: PipelineDeps,
+  bundle: ConfigBundle,
+): Promise<ContextOutcome> {
   const pipeEnv = deps.env ?? process.env;
 
   const providerRaw = bundle.provider?.value ?? "";
@@ -150,12 +158,12 @@ async function resolveCallContext(deps: PipelineDeps, bundle: ConfigBundle): Pro
 
   const baseUrl =
     provider === "anthropic"
-      ? bundle.baseUrl?.value ?? DEFAULT_ANTHROPIC_BASE_URL
-      : bundle.baseUrl?.value ?? pipeEnv.OPENAI_BASE_URL ?? DEFAULT_BASE_URL;
+      ? (bundle.baseUrl?.value ?? DEFAULT_ANTHROPIC_BASE_URL)
+      : (bundle.baseUrl?.value ?? pipeEnv.OPENAI_BASE_URL ?? DEFAULT_BASE_URL);
   const model =
     provider === "anthropic"
-      ? bundle.model?.value ?? DEFAULT_ANTHROPIC_MODEL
-      : bundle.model?.value ?? DEFAULT_MODEL;
+      ? (bundle.model?.value ?? DEFAULT_ANTHROPIC_MODEL)
+      : (bundle.model?.value ?? DEFAULT_MODEL);
 
   // Key demand is resolved here once, after the bundle — main does not
   // pre-check, so a missing key surfaces as "no draft" instead of "no diff".
@@ -167,7 +175,12 @@ async function resolveCallContext(deps: PipelineDeps, bundle: ConfigBundle): Pro
   if (!isLocal && !hasKey) {
     return {
       ok: false,
-      failure: { ok: false, exitCode: 1, kind: "missing-key", message: missingKeyMessage(provider) },
+      failure: {
+        ok: false,
+        exitCode: 1,
+        kind: "missing-key",
+        message: missingKeyMessage(provider),
+      },
     };
   }
   // Never forward a real credential to a local server: local endpoints
@@ -210,6 +223,7 @@ export async function generateDraft(deps: PipelineDeps): Promise<DraftResult> {
   const flags = deps.flags ?? {};
   // One bundle read: provider/baseUrl/model/template in a single config-file
   // pass. resolveKey (per key) stays the granular seam for other callers.
+  // SAFETY: PipelineDeps.flags carries exactly the bundle keys resolveBundle accepts.
   const bundle = await deps.resolveBundle(flags as Partial<Record<string, string | undefined>>);
 
   // Provider selection, per-provider defaults, and the key demand live in one
@@ -281,7 +295,10 @@ export async function generateDraft(deps: PipelineDeps): Promise<DraftResult> {
 
   const result = await dispatchChat(deps, ctxR.context, {
     model,
-    messages: [{ role: "system", content: system }, { role: "user", content: user }],
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: user },
+    ],
     ...(temperatureOverride !== null ? { temperature: temperatureOverride } : { temperature: 0 }),
   });
 
@@ -320,11 +337,16 @@ export async function generateDraft(deps: PipelineDeps): Promise<DraftResult> {
  * The model sees the compacted diff, the current draft, and the revision instruction.
  * The output is still subject to the strict token-fill contract.
  */
-export async function reviseDraft(deps: PipelineDeps, currentDraft: string, instruction: string): Promise<DraftResult> {
+export async function reviseDraft(
+  deps: PipelineDeps,
+  currentDraft: string,
+  instruction: string,
+): Promise<DraftResult> {
   const diff = await deps.stagedDiff();
   const compacted = compact(diff);
 
   const flags = deps.flags ?? {};
+  // SAFETY: PipelineDeps.flags carries exactly the bundle keys resolveBundle accepts.
   const bundle = await deps.resolveBundle(flags as Partial<Record<string, string | undefined>>);
 
   // Same shared resolver as generateDraft: provider selection, per-provider
@@ -387,7 +409,10 @@ export async function reviseDraft(deps: PipelineDeps, currentDraft: string, inst
 
   const result = await dispatchChat(deps, ctxR.context, {
     model,
-    messages: [{ role: "system", content: system }, { role: "user", content: user }],
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: user },
+    ],
     temperature: 0.3,
   });
 

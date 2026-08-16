@@ -60,7 +60,7 @@ export async function commitAcceptedMessage(
       resolve({
         ok: false,
         exitCode: 1,
-        message: `commitshi: could not run git commit: ${(cause as Error).message}`,
+        message: `commitshi: could not run git commit: ${cause.message}`,
       });
     });
     child.on("close", (code) => {

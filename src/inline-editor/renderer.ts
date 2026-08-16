@@ -1,4 +1,4 @@
-import type { EditorState, Draft } from "./state.ts";
+import type { EditorState } from "./state.ts";
 
 export type RenderRow = {
   kind: "subject" | "separator" | "body" | "footer";
@@ -26,18 +26,10 @@ export function buildRenderModel(state: EditorState): RenderRow[] {
   return rows;
 }
 
-function truncateLine(text: string, maxContent: number): string {
-  if (maxContent <= 0) return "";
-  const prefix = text.slice(0, 2);
-  const content = text.slice(2);
-  if (content.length <= maxContent) return text;
-  return prefix + content.slice(0, maxContent);
-}
-
 function getGraphemes(str: string): string[] {
   try {
     const seg = new Intl.Segmenter(undefined, { granularity: "grapheme" });
-    return Array.from(seg.segment(str), s => s.segment);
+    return Array.from(seg.segment(str), (s) => s.segment);
   } catch {
     return Array.from(str);
   }
@@ -46,18 +38,18 @@ function getGraphemes(str: string): string[] {
 function isWide(ch: string): boolean {
   const cp = ch.codePointAt(0) ?? 0;
   // East Asian Wide / Fullwidth + common emoji ranges – approximate
-  if (cp >= 0x1100 && cp <= 0x115F) return true;
+  if (cp >= 0x1100 && cp <= 0x115f) return true;
   if (cp >= 0x2329) return true;
-  if (cp >= 0x2E80 && cp <= 0x303E) return true;
-  if (cp >= 0x3040 && cp <= 0x33FF) return true;
-  if (cp >= 0x3400 && cp <= 0x4DBF) return true;
-  if (cp >= 0x4E00 && cp <= 0x9FFF) return true;
-  if (cp >= 0xF900 && cp <= 0xFAFF) return true;
-  if (cp >= 0xFE10 && cp <= 0xFE19) return true;
-  if (cp >= 0xFE30 && cp <= 0xFE6F) return true;
-  if (cp >= 0xFF00 && cp <= 0xFF60) return true;
-  if (cp >= 0xFFE0 && cp <= 0xFFE6) return true;
-  if (cp >= 0x1F300 && cp <= 0x1FAFF) return true;
+  if (cp >= 0x2e80 && cp <= 0x303e) return true;
+  if (cp >= 0x3040 && cp <= 0x33ff) return true;
+  if (cp >= 0x3400 && cp <= 0x4dbf) return true;
+  if (cp >= 0x4e00 && cp <= 0x9fff) return true;
+  if (cp >= 0xf900 && cp <= 0xfaff) return true;
+  if (cp >= 0xfe10 && cp <= 0xfe19) return true;
+  if (cp >= 0xfe30 && cp <= 0xfe6f) return true;
+  if (cp >= 0xff00 && cp <= 0xff60) return true;
+  if (cp >= 0xffe0 && cp <= 0xffe6) return true;
+  if (cp >= 0x1f300 && cp <= 0x1faff) return true;
   return false;
 }
 
@@ -97,14 +89,24 @@ function wrapText(text: string, maxWidth: number): { chunk: string; start: numbe
 
 export function buildVisualLayout(state: EditorState, columns?: number): VisualRow[] {
   const visual: VisualRow[] = [];
-  const { draft, cursor } = state;
-  const isTTY = typeof columns === "number" && columns > 0;
-  const maxContent = isTTY ? Math.max(0, columns! - 2) : Infinity;
+  const { draft } = state;
+  const isTTY = columns !== undefined && columns > 0;
+  const maxContent = isTTY ? Math.max(0, columns - 2) : Infinity;
 
-  const pushLine = (area: VisualRow["logicalArea"], logicalRow: number | undefined, text: string, active: boolean) => {
+  const pushLine = (
+    area: VisualRow["logicalArea"],
+    logicalRow: number | undefined,
+    text: string,
+  ) => {
     if (!isTTY) {
       const prefix = "";
-      visual.push({ logicalArea: area, logicalRow, text: prefix + text, startOffset: 0, endOffset: text.length });
+      visual.push({
+        logicalArea: area,
+        logicalRow,
+        text: prefix + text,
+        startOffset: 0,
+        endOffset: text.length,
+      });
       return;
     }
     const prefixFirst = "";
@@ -135,25 +137,48 @@ export function buildVisualLayout(state: EditorState, columns?: number): VisualR
   };
 
   // subject
-  pushLine("subject", undefined, draft.subject, cursor.area === "subject");
+  pushLine("subject", undefined, draft.subject);
   // separator
-  visual.push({ logicalArea: "separator", logicalRow: undefined, text: "", startOffset: 0, endOffset: 0 });
+  visual.push({
+    logicalArea: "separator",
+    logicalRow: undefined,
+    text: "",
+    startOffset: 0,
+    endOffset: 0,
+  });
   // body
   draft.body.forEach((line, i) => {
-    const active = cursor.area === "body" && cursor.row === i;
-    pushLine("body", i, line, active);
+    pushLine("body", i, line);
   });
   // spacer before footer
-  visual.push({ logicalArea: "footer", logicalRow: undefined, text: "", startOffset: 0, endOffset: 0 });
+  visual.push({
+    logicalArea: "footer",
+    logicalRow: undefined,
+    text: "",
+    startOffset: 0,
+    endOffset: 0,
+  });
   // footer
   const footerText = "[Ctrl+S] save  ·  [Esc] cancel";
   if (isTTY) {
-    const chunks = wrapText(footerText, columns!);
+    const chunks = wrapText(footerText, columns);
     chunks.forEach((c) => {
-      visual.push({ logicalArea: "footer", logicalRow: undefined, text: c.chunk, startOffset: c.start, endOffset: c.end });
+      visual.push({
+        logicalArea: "footer",
+        logicalRow: undefined,
+        text: c.chunk,
+        startOffset: c.start,
+        endOffset: c.end,
+      });
     });
   } else {
-    visual.push({ logicalArea: "footer", logicalRow: undefined, text: footerText, startOffset: 0, endOffset: footerText.length });
+    visual.push({
+      logicalArea: "footer",
+      logicalRow: undefined,
+      text: footerText,
+      startOffset: 0,
+      endOffset: footerText.length,
+    });
   }
   return visual;
 }
@@ -163,7 +188,7 @@ const RESET = "\x1b[0m";
 
 export function renderToLines(state: EditorState, columns?: number): string[] {
   const layout = buildVisualLayout(state, columns);
-  return layout.map(v => {
+  return layout.map((v) => {
     if (v.logicalArea === "footer") {
       const t = v.text;
       // Empty spacer rows stay empty, footer text is dimmed
@@ -173,7 +198,7 @@ export function renderToLines(state: EditorState, columns?: number): string[] {
   });
 }
 
-function getLogicalLine(state: EditorState, area: "subject"|"body", logicalRow?: number): string {
+function getLogicalLine(state: EditorState, area: "subject" | "body", logicalRow?: number): string {
   if (area === "subject") return state.draft.subject;
   const row = logicalRow ?? 0;
   return state.draft.body[row] ?? "";
@@ -184,13 +209,13 @@ function substringByGrapheme(str: string, start: number, end: number): string {
   return gs.slice(start, end).join("");
 }
 
-export function cursorPosition(state: EditorState, columns?: number): { row: number; col: number } {
+export type CursorPosition = { row: number; col: number };
+
+export function cursorPosition(state: EditorState, columns?: number): CursorPosition {
   const layout = buildVisualLayout(state, columns);
   const { cursor } = state;
   const targetLogicalArea = cursor.area === "subject" ? "subject" : "body";
   const targetLogicalRow = cursor.area === "subject" ? undefined : cursor.row;
-  const isActive = true;
-  let finalCol = 0;
 
   for (let i = 0; i < layout.length; i++) {
     const v = layout[i];
@@ -198,9 +223,8 @@ export function cursorPosition(state: EditorState, columns?: number): { row: num
     if (targetLogicalRow !== undefined && v.logicalRow !== targetLogicalRow) continue;
     // cursor lies in this visual chunk if col is within [startOffset, endOffset]
     if (cursor.col >= v.startOffset && cursor.col <= v.endOffset) {
-      const logicalLine = getLogicalLine(state, targetLogicalArea as "subject"|"body", targetLogicalRow);
+      const logicalLine = getLogicalLine(state, targetLogicalArea, targetLogicalRow);
       const before = substringByGrapheme(logicalLine, v.startOffset, cursor.col);
-      const isFirstChunk = v.startOffset === 0;
       const prefixStr = "";
       let col = displayWidth(prefixStr) + displayWidth(before);
       if (columns) col = Math.min(col, columns - 1);
@@ -217,9 +241,8 @@ export function cursorPosition(state: EditorState, columns?: number): { row: num
     const v = layout[i];
     if (v.logicalArea !== targetLogicalArea) continue;
     if (targetLogicalRow !== undefined && v.logicalRow !== targetLogicalRow) continue;
-    const logicalLine = getLogicalLine(state, targetLogicalArea as "subject"|"body", targetLogicalRow);
+    const logicalLine = getLogicalLine(state, targetLogicalArea, targetLogicalRow);
     const chunkText = substringByGrapheme(logicalLine, v.startOffset, v.endOffset);
-    const isFirstChunk = v.startOffset === 0;
     const prefixStr = "";
     let col = displayWidth(prefixStr) + displayWidth(chunkText);
     if (columns) col = Math.min(col, columns - 1);

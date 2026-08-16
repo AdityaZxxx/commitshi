@@ -32,7 +32,9 @@ export type Deps = Readonly<{
   gitConfigGet?: GitConfigGet;
 }>;
 
-export type GitConfigGet = (key: string) => Promise<Readonly<{ value: string; source: Source }> | null>;
+export type GitConfigGet = (
+  key: string,
+) => Promise<Readonly<{ value: string; source: Source }> | null>;
 
 /** Reads one key from git config, repo scope preferred over global. */
 export const makeGitConfigGet =
@@ -50,7 +52,10 @@ export const makeGitConfigGet =
         const tab = line.indexOf("\t");
         if (tab === -1) continue;
         if (line.slice(0, tab).trim().toLowerCase() === wanted) {
-          return { value: line.slice(tab + 1), source: scope === "repo" ? "repo git-config" : "global git-config" };
+          return {
+            value: line.slice(tab + 1),
+            source: scope === "repo" ? "repo git-config" : "global git-config",
+          };
         }
       }
     }
@@ -58,7 +63,8 @@ export const makeGitConfigGet =
   };
 
 async function dumpGitConfig(scope: "repo" | "global"): Promise<string> {
-  const args = scope === "repo" ? ["config", "--local", "--list"] : ["config", "--global", "--list"];
+  const args =
+    scope === "repo" ? ["config", "--local", "--list"] : ["config", "--global", "--list"];
   const { stdout } = await execFileAsync("git", args);
   return stdout;
 }
@@ -175,9 +181,11 @@ export const isLocalBaseUrl = (baseUrl: string): boolean =>
 
 /** Renders config entries in exactly the TOML-compatible syntax readConfigFile parses. */
 export function formatConfigFile(entries: Readonly<Record<string, string>>): string {
-  return Object.entries(entries)
-    .map(([key, value]) => `${key.toLowerCase()} = ${value}`)
-    .join("\n") + "\n";
+  return (
+    Object.entries(entries)
+      .map(([key, value]) => `${key.toLowerCase()} = ${value}`)
+      .join("\n") + "\n"
+  );
 }
 
 export type ConfigEntries = ReadonlyArray<readonly [key: string, value: string]>;
@@ -220,10 +228,10 @@ export function updateConfigText(existing: string, entries: ConfigEntries): stri
   return out.join("\n");
 }
 
-const PROVIDER_ENV: Readonly<Record<Provider, string>> = {
+const PROVIDER_ENV = {
   openai: "OPENAI_API_KEY",
   anthropic: "ANTHROPIC_API_KEY",
-};
+} satisfies Record<Provider, string>;
 
 /**
  * Resolves the API key for a provider. Intentionally does NOT consult git

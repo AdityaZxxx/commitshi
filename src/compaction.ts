@@ -23,7 +23,7 @@ export type NumstatEntry = Readonly<{
   binary: boolean;
 }>;
 
-type DiffHunk = Readonly<{
+export type DiffHunk = Readonly<{
   oldStart: number; // old-side start line of this hunk (from @@ header)
   lines: string[];
 }>;
@@ -38,8 +38,12 @@ export type DiffFile = Readonly<{
 /** Parses a unified diff into per-file hunks. Unfamiliar headers pass through as part of the file header. */
 export function parseDiff(diff: string): DiffFile[] {
   const files: DiffFile[] = [];
-  let current: { oldPath: string | null; newPath: string | null; hunks: DiffHunk[]; binary: boolean } | null =
-    null;
+  let current: {
+    oldPath: string | null;
+    newPath: string | null;
+    hunks: DiffHunk[];
+    binary: boolean;
+  } | null = null;
   let hunk: DiffHunk | null = null;
 
   for (const line of diff.split("\n")) {
@@ -80,7 +84,10 @@ export function parseDiff(diff: string): DiffFile[] {
       current.hunks.push(hunk);
       continue;
     }
-    if (hunk !== null && (line.startsWith("+") || line.startsWith("-") || line.startsWith(" ") || line === "\\")) {
+    if (
+      hunk !== null &&
+      (line.startsWith("+") || line.startsWith("-") || line.startsWith(" ") || line === "\\")
+    ) {
       hunk.lines.push(line);
     }
     // index/mode/rename headers live between "diff --git" and the first hunk;
@@ -161,7 +168,10 @@ export function slimHunk(hunk: DiffHunk): string {
 function slimRun(sign: string, run: string[]): string[] {
   if (run.length <= HUNK_RUN_WINDOW) return run;
   const kept = run.slice(0, HUNK_RUN_WINDOW);
-  return [...kept, `${sign}… (${run.length - HUNK_RUN_WINDOW} more ${sign === "+" ? "added" : "removed"} lines)`];
+  return [
+    ...kept,
+    `${sign}… (${run.length - HUNK_RUN_WINDOW} more ${sign === "+" ? "added" : "removed"} lines)`,
+  ];
 }
 
 function slits(fromLine: number, toLineExclusive: number): string {
@@ -253,7 +263,10 @@ export function renderCompacted(compacted: CompactedDiff): string {
     lines.push(`${stat.path}: ${counts}`);
   }
   if (compacted.truncated) {
-    lines.push("", "⚠ truncated: the staged change is larger than the digest budget; hunks beyond the cap were omitted");
+    lines.push(
+      "",
+      "⚠ truncated: the staged change is larger than the digest budget; hunks beyond the cap were omitted",
+    );
   }
   lines.push("", compacted.hunks);
   return lines.join("\n");

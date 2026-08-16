@@ -3,9 +3,7 @@ export type Draft = {
   body: string[];
 };
 
-export type Cursor =
-  | { area: "subject"; col: number }
-  | { area: "body"; row: number; col: number };
+export type Cursor = { area: "subject"; col: number } | { area: "body"; row: number; col: number };
 
 export type EditorState = {
   draft: Draft;

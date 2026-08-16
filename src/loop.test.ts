@@ -7,12 +7,7 @@ function stripAnsi(s: string): string {
   return s.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
-function capture(): {
-  stream: Pick<NodeJS.WriteStream, "write">;
-  text: () => string;
-  /** Visible text with ANSI escapes removed. */
-  visible: () => string;
-} {
+function capture() {
   let buf = "";
   return {
     stream: {
@@ -22,6 +17,7 @@ function capture(): {
       },
     },
     text: () => buf,
+    /** Visible text with ANSI escapes removed. */
     visible: () => stripAnsi(buf),
   };
 }
@@ -32,14 +28,11 @@ function scriptedAsk(answers: readonly (string | null)[]): AskKey {
   return async () => (i < answers.length ? answers[i++] : null);
 }
 
-function makeDeps(
-  answers: readonly (string | null)[],
-  extra: Partial<LoopDeps> = {},
-): { deps: LoopDeps; stdout: ReturnType<typeof capture>; stderr: ReturnType<typeof capture> } {
+function makeDeps(answers: readonly (string | null)[], extra: Partial<LoopDeps> = {}) {
   const stdout = capture();
   const stderr = capture();
   const deps: LoopDeps = {
-    stdin: new PassThrough() as unknown as NodeJS.ReadStream,
+    stdin: new PassThrough(),
     stdout: stdout.stream,
     stderr: stderr.stream,
     stdinIsTTY: true,
@@ -63,7 +56,11 @@ describe("interactLoop", () => {
     const stdout = capture();
     const { deps } = makeDeps([], { stdinIsTTY: false, stdoutIsTTY: true });
     const result = await interactLoop(good, { ...deps, stdout: stdout.stream });
-    expect(result).toEqual({ ok: false, exitCode: 1, message: expect.stringContaining("interactive terminal") });
+    expect(result).toEqual({
+      ok: false,
+      exitCode: 1,
+      message: expect.stringContaining("interactive terminal"),
+    });
     expect(stdout.text()).toBe("");
   });
 
@@ -78,7 +75,12 @@ describe("interactLoop", () => {
   test("Enter accepts the draft and proceeds to the next stage", async () => {
     const { deps, stdout } = makeDeps([""]);
     const result = await interactLoop(good, deps);
-    expect(result).toEqual({ ok: true, action: "accepted", draft: "feat(a): do the thing", regenerations: 0 });
+    expect(result).toEqual({
+      ok: true,
+      action: "accepted",
+      draft: "feat(a): do the thing",
+      regenerations: 0,
+    });
     expect(stdout.text()).toContain("feat(a): do the thing");
   });
 
@@ -107,14 +109,22 @@ describe("interactLoop", () => {
   test("e with no $EDITOR fails loud, never a silent accept", async () => {
     const { deps } = makeDeps(["e"], { env: { EDITOR: "" } });
     const result = await interactLoop(good, deps);
-    expect(result).toEqual({ ok: false, exitCode: 1, message: expect.stringContaining("$EDITOR is not set") });
+    expect(result).toEqual({
+      ok: false,
+      exitCode: 1,
+      message: expect.stringContaining("$EDITOR is not set"),
+    });
   });
 
   test("a failing editor aborts loud, draft unchanged and not accepted", async () => {
     const spawn = async () => 1;
     const { deps } = makeDeps(["e"], { spawn, env: { EDITOR: "broken-editor" } });
     const result = await interactLoop(good, deps);
-    expect(result).toEqual({ ok: false, exitCode: 1, message: expect.stringContaining("exited with code 1") });
+    expect(result).toEqual({
+      ok: false,
+      exitCode: 1,
+      message: expect.stringContaining("exited with code 1"),
+    });
   });
 
   test("an editor that leaves the draft empty fails loud, nothing accepted", async () => {
@@ -135,7 +145,12 @@ describe("interactLoop", () => {
     };
     const { deps, stdout } = makeDeps(["r", ""], { regenerate });
     const result = await interactLoop(good, deps);
-    expect(result).toEqual({ ok: true, action: "accepted", draft: "feat(a): fresh #1", regenerations: 1 });
+    expect(result).toEqual({
+      ok: true,
+      action: "accepted",
+      draft: "feat(a): fresh #1",
+      regenerations: 1,
+    });
     expect(calls).toBe(1);
     expect(stdout.text()).toContain("fresh #1");
   });
@@ -148,13 +163,22 @@ describe("interactLoop", () => {
     });
     const { deps } = makeDeps(["r"], { regenerate });
     const result = await interactLoop(good, deps);
-    expect(result).toEqual({ ok: false, exitCode: 1, message: expect.stringContaining("rate limited") });
+    expect(result).toEqual({
+      ok: false,
+      exitCode: 1,
+      message: expect.stringContaining("rate limited"),
+    });
   });
 
   test("q cancels the loop — nothing proceeds, exit 0 at the caller", async () => {
     const { deps } = makeDeps(["q"]);
     const result = await interactLoop(good, deps);
-    expect(result).toEqual({ ok: true, action: "cancel", draft: "feat(a): do the thing", regenerations: 0 });
+    expect(result).toEqual({
+      ok: true,
+      action: "cancel",
+      draft: "feat(a): do the thing",
+      regenerations: 0,
+    });
   });
 
   test("edit then regenerate replaces the edits; accept takes the fresh draft", async () => {
@@ -162,20 +186,31 @@ describe("interactLoop", () => {
       await Bun.write(path, "docs(c): my edit\n");
       return 0;
     };
-    let calls = 0;
-    const regenerate = async (): Promise<DraftAttempt> => {
-      calls++;
-      return { ok: true, draft: "feat(a): after edit", truncated: false, numstat: [] };
-    };
+    const regenerate = async (): Promise<DraftAttempt> => ({
+      ok: true,
+      draft: "feat(a): after edit",
+      truncated: false,
+      numstat: [],
+    });
     const { deps } = makeDeps(["e", "r", ""], { spawn, env: { EDITOR: "ed" }, regenerate });
     const result = await interactLoop(good, deps);
-    expect(result).toEqual({ ok: true, action: "accepted", draft: "feat(a): after edit", regenerations: 1 });
+    expect(result).toEqual({
+      ok: true,
+      action: "accepted",
+      draft: "feat(a): after edit",
+      regenerations: 1,
+    });
   });
 
   test("an unrecognized key gets a quiet named re-prompt, Enter still accepts", async () => {
     const { deps, stdout } = makeDeps(["x", ""]);
     const result = await interactLoop(good, deps);
-    expect(result).toEqual({ ok: true, action: "accepted", draft: "feat(a): do the thing", regenerations: 0 });
+    expect(result).toEqual({
+      ok: true,
+      action: "accepted",
+      draft: "feat(a): do the thing",
+      regenerations: 0,
+    });
     expect(stdout.text()).toContain("unknown key");
     expect(stdout.text()).toContain("press Enter to accept");
   });
@@ -183,7 +218,11 @@ describe("interactLoop", () => {
   test("EOF on the key source aborts loud, no silent accept", async () => {
     const { deps } = makeDeps([null]);
     const result = await interactLoop(good, deps);
-    expect(result).toEqual({ ok: false, exitCode: 1, message: expect.stringContaining("input closed") });
+    expect(result).toEqual({
+      ok: false,
+      exitCode: 1,
+      message: expect.stringContaining("input closed"),
+    });
   });
 
   // ── Ticket 13: draft presentation ────────────────────────────────────
@@ -206,7 +245,12 @@ describe("interactLoop", () => {
   });
 
   test("r increments the draft counter; the draft label advances", async () => {
-    const fresh: DraftAttempt = { ok: true, draft: "feat(a): fresh", truncated: false, numstat: [] };
+    const fresh: DraftAttempt = {
+      ok: true,
+      draft: "feat(a): fresh",
+      truncated: false,
+      numstat: [],
+    };
     const regenerate = async (): Promise<DraftAttempt> => fresh;
     const { deps, stdout } = makeDeps(["r", ""], { regenerate, colorEnabled: false });
     const result = await interactLoop(good, deps);
@@ -222,7 +266,11 @@ describe("interactLoop", () => {
       await Bun.write(path, `${editResult}\n`);
       return 0;
     };
-    const { deps, stdout } = makeDeps(["e", ""], { spawn, env: { EDITOR: "fake" }, colorEnabled: false });
+    const { deps, stdout } = makeDeps(["e", ""], {
+      spawn,
+      env: { EDITOR: "fake" },
+      colorEnabled: false,
+    });
     const result = await interactLoop(good, deps);
     expect(result.ok).toBe(true);
     const v = stdout.visible();
