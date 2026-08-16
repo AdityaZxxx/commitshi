@@ -2,23 +2,19 @@
   "name": "commitshi",
   "version": "0.1.0",
   "description": "Generate a commit message from the staged diff with an LLM, then accept, edit, or regenerate before committing",
+  "keywords": [
+    "ai",
+    "cli",
+    "commit",
+    "git",
+    "github"
+  ],
   "license": "MIT",
   "author": "Aditya Rahmad",
-  "keywords": [
-    "github",
-    "git",
-    "commit",
-    "cli",
-    "ai"
-  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/AdityaZxxx/commitshi.git"
   },
-  "publishConfig": {
-    "access": "public"
-  },
-  "type": "module",
   "bin": {
     "commitshi": "bin/commitshi.ts",
     "shi": "bin/commitshi.ts"
@@ -28,18 +24,28 @@
     "src",
     "!**/*.test.ts"
   ],
+  "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit",
+    "lint": "oxlint",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check",
     "commitshi": "bun bin/commitshi.ts",
     "shi": "bun bin/commitshi.ts"
+  },
+  "devDependencies": {
+    "@oxlint/plugins": "1.78.0",
+    "@types/node": "^26.2.0",
+    "bun-types": "^1.3.14",
+    "oxfmt": "0.63.0",
+    "oxlint": "1.78.0"
   },
   "engines": {
     "bun": ">=1.1",
     "node": ">=18"
-  },
-  "devDependencies": {
-    "@types/node": "^26.2.0",
-    "bun-types": "^1.3.14"
   }
 }
