@@ -183,6 +183,59 @@ describe("main", () => {
       expect(out.text().trim()).toBe("");
     });
 
+    // Ticket 06: the Anthropic adapter end to end through main. A user with
+    // ANTHROPIC_API_KEY set drafts with --provider anthropic and nothing else;
+    // the call rides the Anthropic transport, never the OpenAI one.
+    test("--provider anthropic drafts via the Anthropic transport with ANTHROPIC_API_KEY", async () => {
+      await git(workdir, "init", "-q");
+      await writeFile(join(workdir, "a.txt"), "one\n");
+      await git(workdir, "add", "a.txt");
+
+      let anthropicCalls = 0;
+      let openaiCalls = 0;
+      const out = capture();
+      const err = capture();
+      const code = await main(["--no-commit", "--provider", "anthropic"], out.stream, err.stream, {
+        config: {
+          env: { ANTHROPIC_API_KEY: "sk-ant-test" },
+          configFilePath: join(workdir, "no-such-config"),
+          gitConfigGet: async () => null,
+        },
+        chat: async () => {
+          openaiCalls++;
+          return { ok: true as const, content: "type: feat\nscope: -\nsummary: add a.txt\nbody: -" };
+        },
+        anthropicChat: async () => {
+          anthropicCalls++;
+          return { ok: true as const, content: "type: feat\nscope: -\nsummary: add a.txt\nbody: -" };
+        },
+      });
+      expect(code).toBe(0);
+      expect(out.text()).toContain("feat: add a.txt");
+      expect(anthropicCalls).toBe(1);
+      expect(openaiCalls).toBe(0);
+    });
+
+    test("--provider anthropic with no ANTHROPIC_API_KEY fails loud, exit 1", async () => {
+      await git(workdir, "init", "-q");
+      await writeFile(join(workdir, "a.txt"), "one\n");
+      await git(workdir, "add", "a.txt");
+
+      const out = capture();
+      const err = capture();
+      const code = await main(["--no-commit", "--provider", "anthropic"], out.stream, err.stream, {
+        config: {
+          env: {},
+          configFilePath: join(workdir, "no-such-config"),
+          gitConfigGet: async () => null,
+        },
+        anthropicChat: async () => ({ ok: true as const, content: "type: feat\nscope: -\nsummary: x\nbody: -" }),
+      });
+      expect(code).toBe(1);
+      expect(err.text()).toContain("ANTHROPIC_API_KEY");
+      expect(out.text().trim()).toBe("");
+    });
+
     // Ticket 07: the interactive loop wired through main, driven by a
     // scripted key seam over a real staged repo. The loop seams make the
     // run deterministic — no TTY, no editor, no live model.

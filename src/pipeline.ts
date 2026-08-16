@@ -5,6 +5,7 @@
 
 import { compact, renderCompacted, type NumstatEntry } from "./compaction.ts";
 import { chatCompletions, type ChatDeps, type CompletionResult } from "./provider/openai.ts";
+import { anthropicMessages } from "./provider/anthropic.ts";
 import type { Provider } from "./config.ts";
 import { isLocalBaseUrl, missingKeyMessage, type ConfigBundle } from "./config.ts";
 import {
@@ -41,6 +42,8 @@ export type PipelineDeps = Readonly<{
    * developer's exported vars can't leak into the key-demand check. */
   env?: NodeJS.ProcessEnv;
   chat?: (deps: ChatDeps, req: Parameters<typeof chatCompletions>[1]) => Promise<CompletionResult>;
+  /** Anthropic transport seam (tests); production wires provider/anthropic.ts's `anthropicMessages`. */
+  anthropicChat?: (deps: Parameters<typeof anthropicMessages>[0], req: Parameters<typeof anthropicMessages>[1]) => Promise<CompletionResult>;
   /** One-shot CLI overrides, applied at the top of the precedence chain. None are ever persisted. */
   flags?: Readonly<{
     model?: string;
@@ -79,11 +82,120 @@ export const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 // NOT the `gpt-5.6` alias, which routes to the flagship Sol tier ($5/$30).
 export const DEFAULT_MODEL = "gpt-5.6-luna";
 
+// The Anthropic seam's own defaults: the Messages API root and the cheapest
+// current Claude — same "cheap, fast, right-sized" rationale as DEFAULT_MODEL.
+export const DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com";
+export const DEFAULT_ANTHROPIC_MODEL = "claude-haiku-4-5";
+
+/** The providers the pipeline can route a draft through. */
+export const SUPPORTED_PROVIDERS: readonly Provider[] = ["openai", "anthropic"];
+
+/** Normalizes a provider name for matching; unknown strings stay unknown. */
+function normalizeProvider(value: string): Provider | null {
+  const v = value.trim().toLowerCase();
+  return (SUPPORTED_PROVIDERS as readonly string[]).includes(v) ? (v as Provider) : null;
+}
+
 let regenerateTemperatureOverride: number | null = null;
 
 /** Sets the temperature used by the next generateDraft() call. Reset on every generateDraft() entry. */
 export function setRegenerateTemperatureOverride(value: number | null): void {
   regenerateTemperatureOverride = value;
+}
+
+/** The provider-facing facts both draft paths need to make one call. */
+type CallContext = Readonly<{
+  provider: Provider;
+  baseUrl: string;
+  model: string;
+  apiKey?: string;
+}>;
+
+type ContextOutcome =
+  | Readonly<{ ok: true; context: CallContext }>
+  | Readonly<{ ok: false; failure: DraftResult }>;
+
+/**
+ * Resolves the call context shared by generateDraft and reviseDraft:
+ * provider selection (unknown names refuse loud, never a silent fallthrough
+ * to the wrong wire format), per-provider baseUrl/model defaults, and the
+ * key demand. Every provider-specific default lives HERE, so neither
+ * transport's assumptions leak into the other's flow.
+ *
+ * The API key may legitimately be absent for a local endpoint; only a
+ * non-local baseUrl demands one. Keys keep their own seam — they never
+ * consult git config, unlike the bundle.
+ */
+async function resolveCallContext(deps: PipelineDeps, bundle: ConfigBundle): Promise<ContextOutcome> {
+  const pipeEnv = deps.env ?? process.env;
+
+  const providerRaw = bundle.provider?.value ?? "";
+  let provider: Provider;
+  if (providerRaw.trim() === "") {
+    provider = "openai"; // absent means the OpenAI-compatible default
+  } else {
+    const normalized = normalizeProvider(providerRaw);
+    if (normalized === null) {
+      return {
+        ok: false,
+        failure: {
+          ok: false,
+          exitCode: 2,
+          message: `commitshi: provider "${providerRaw}" is not supported — supported providers: openai (OpenAI-compatible: OpenAI, Groq, DeepSeek, Ollama at any baseUrl), anthropic.`,
+        },
+      };
+    }
+    provider = normalized;
+  }
+
+  const baseUrl =
+    provider === "anthropic"
+      ? bundle.baseUrl?.value ?? DEFAULT_ANTHROPIC_BASE_URL
+      : bundle.baseUrl?.value ?? pipeEnv.OPENAI_BASE_URL ?? DEFAULT_BASE_URL;
+  const model =
+    provider === "anthropic"
+      ? bundle.model?.value ?? DEFAULT_ANTHROPIC_MODEL
+      : bundle.model?.value ?? DEFAULT_MODEL;
+
+  // Key demand is resolved here once, after the bundle — main does not
+  // pre-check, so a missing key surfaces as "no draft" instead of "no diff".
+  const apiKeyR = await deps.resolveApiKey(provider);
+  const envKey = provider === "anthropic" ? pipeEnv.ANTHROPIC_API_KEY : pipeEnv.OPENAI_API_KEY;
+  const isLocal = isLocalBaseUrl(baseUrl);
+  const hasKey =
+    (apiKeyR !== null && apiKeyR.value !== "") || (envKey !== undefined && envKey !== "");
+  if (!isLocal && !hasKey) {
+    return {
+      ok: false,
+      failure: { ok: false, exitCode: 1, kind: "missing-key", message: missingKeyMessage(provider) },
+    };
+  }
+  // Never forward a real credential to a local server: local endpoints
+  // (Ollama & friends) don't consult it, and a stray provider key must not
+  // leak to whatever happens to be listening on localhost. (The real
+  // makeResolveApiKey reads the provider env var first, so apiKeyR already
+  // carries an env-supplied key when one exists.)
+  const apiKey = isLocal ? undefined : apiKeyR?.value;
+
+  return { ok: true, context: { provider, baseUrl, model, apiKey } };
+}
+
+/**
+ * Routes one CompletionRequest to the provider's transport. The request is
+ * provider-agnostic (same prompt assembly for both); only the wire format
+ * differs, and that difference lives entirely inside the two adapters.
+ */
+async function dispatchChat(
+  deps: PipelineDeps,
+  context: CallContext,
+  request: Parameters<typeof chatCompletions>[1],
+): Promise<CompletionResult> {
+  if (context.provider === "anthropic") {
+    const chat = deps.anthropicChat ?? anthropicMessages;
+    return chat({ baseUrl: context.baseUrl, apiKey: context.apiKey }, request);
+  }
+  const chat = deps.chat ?? chatCompletions;
+  return chat({ baseUrl: context.baseUrl, apiKey: context.apiKey }, request);
 }
 /**
  * Runs the full tracer-bullet pipeline. A failure at any stage returns a loud
@@ -95,47 +207,18 @@ export async function generateDraft(deps: PipelineDeps): Promise<DraftResult> {
   const diff = await deps.stagedDiff();
   const compacted = compact(diff);
 
-  // Provider selection: the OpenAI-compatible adapter ships today; asking
-  // for another provider gets a loud, honest refusal, not a silent
-  // fallthrough to the wrong wire format.
   const flags = deps.flags ?? {};
   // One bundle read: provider/baseUrl/model/template in a single config-file
   // pass. resolveKey (per key) stays the granular seam for other callers.
   const bundle = await deps.resolveBundle(flags as Partial<Record<string, string | undefined>>);
 
-  const providerR = bundle.provider;
-  if (providerR !== undefined && providerR.value !== "" && providerR.value.toLowerCase() !== "openai") {
-    return {
-      ok: false,
-      exitCode: 2,
-      message: `commitshi: provider "${providerR.value}" is not supported — commitshi currently understands only the OpenAI-compatible adapter (OpenAI, Groq, DeepSeek, Ollama at any baseUrl).`,
-    };
-  }
+  // Provider selection, per-provider defaults, and the key demand live in one
+  // shared resolver so generateDraft and reviseDraft can never drift.
+  const ctxR = await resolveCallContext(deps, bundle);
+  if (!ctxR.ok) return ctxR.failure;
+  const { baseUrl, model } = ctxR.context;
 
-  // The API key may legitimately be absent for a local OpenAI-compatible
-  // endpoint; only a non-local baseUrl demands one. It keeps its own seam —
-  // keys never consult git config, unlike the bundle above.
-  const apiKeyR = await deps.resolveApiKey("openai");
-
-  const pipeEnv = deps.env ?? process.env;
-  const baseUrl = bundle.baseUrl?.value ?? pipeEnv.OPENAI_BASE_URL ?? DEFAULT_BASE_URL;
-  const model = bundle.model?.value ?? DEFAULT_MODEL;
   const templateRaw = bundle.template?.value?.trim() ?? "";
-
-  const isLocal = isLocalBaseUrl(baseUrl);
-  // Key demand is resolved here once, after the bundle — main does not
-  // pre-check, so a missing key surfaces as "no draft" instead of "no diff".
-  const envKey = pipeEnv.OPENAI_API_KEY;
-  const hasKey =
-    (apiKeyR !== null && apiKeyR.value !== "") || (envKey !== undefined && envKey !== "");
-  if (!isLocal && !hasKey) {
-    return { ok: false, exitCode: 1, kind: "missing-key", message: missingKeyMessage("openai") };
-  }
-  // Never forward a real credential to a local server: local endpoints
-  // (Ollama & friends) don't consult it, and a stray OPENAI_API_KEY must not
-  // leak to whatever happens to be listening on localhost.
-  const apiKey = isLocal ? undefined : apiKeyR?.value;
-
   const template = templateRaw === "" ? DEFAULT_CONVENTIONAL_TEMPLATE : templateRaw;
   // Fail fast on a malformed template before a single token is spent — the
   // model call is the expensive failure to make loud.
@@ -196,15 +279,11 @@ export async function generateDraft(deps: PipelineDeps): Promise<DraftResult> {
     "Use the provided changes as the factual source of truth. Follow applicable formatting and wording instructions, but do not introduce factual claims unsupported by the provided changes.",
   ].join("\n");
 
-  const chat = deps.chat ?? chatCompletions;
-  const result = await chat(
-    { baseUrl, apiKey },
-    {
-      model,
-      messages: [{ role: "system", content: system }, { role: "user", content: user }],
-      ...(temperatureOverride !== null ? { temperature: temperatureOverride } : { temperature: 0 }),
-    },
-  );
+  const result = await dispatchChat(deps, ctxR.context, {
+    model,
+    messages: [{ role: "system", content: system }, { role: "user", content: user }],
+    ...(temperatureOverride !== null ? { temperature: temperatureOverride } : { temperature: 0 }),
+  });
 
   if (!result.ok) {
     // Loud, single-shot failure: rate limits and auth get a distinct exit code
@@ -248,29 +327,13 @@ export async function reviseDraft(deps: PipelineDeps, currentDraft: string, inst
   const flags = deps.flags ?? {};
   const bundle = await deps.resolveBundle(flags as Partial<Record<string, string | undefined>>);
 
-  const providerR = bundle.provider;
-  if (providerR !== undefined && providerR.value !== "" && providerR.value.toLowerCase() !== "openai") {
-    return {
-      ok: false,
-      exitCode: 2,
-      message: `commitshi: provider "${providerR.value}" is not supported — commitshi currently understands only the OpenAI-compatible adapter (OpenAI, Groq, DeepSeek, Ollama at any baseUrl).`,
-    };
-  }
+  // Same shared resolver as generateDraft: provider selection, per-provider
+  // defaults, and the key demand can never drift between the two paths.
+  const ctxR = await resolveCallContext(deps, bundle);
+  if (!ctxR.ok) return ctxR.failure;
+  const { baseUrl, model } = ctxR.context;
 
-  const apiKeyR = await deps.resolveApiKey("openai");
-  const pipeEnv = deps.env ?? process.env;
-  const baseUrl = bundle.baseUrl?.value ?? pipeEnv.OPENAI_BASE_URL ?? DEFAULT_BASE_URL;
-  const model = bundle.model?.value ?? DEFAULT_MODEL;
   const templateRaw = bundle.template?.value?.trim() ?? "";
-
-  const isLocal = isLocalBaseUrl(baseUrl);
-  const envKey = pipeEnv.OPENAI_API_KEY;
-  const hasKey =
-    (apiKeyR !== null && apiKeyR.value !== "") || (envKey !== undefined && envKey !== "");
-  if (!isLocal && !hasKey) {
-    return { ok: false, exitCode: 1, kind: "missing-key", message: missingKeyMessage("openai") };
-  }
-  const apiKey = isLocal ? undefined : apiKeyR?.value;
 
   const template = templateRaw === "" ? DEFAULT_CONVENTIONAL_TEMPLATE : templateRaw;
   const templateError = checkTemplate(template);
@@ -322,15 +385,11 @@ export async function reviseDraft(deps: PipelineDeps, currentDraft: string, inst
     "Use the provided changes as the factual source of truth. Revise the existing draft to follow the revision instruction while staying grounded in the compacted diff. Fill every template token.",
   ].join("\n");
 
-  const chat = deps.chat ?? chatCompletions;
-  const result = await chat(
-    { baseUrl, apiKey },
-    {
-      model,
-      messages: [{ role: "system", content: system }, { role: "user", content: user }],
-      temperature: 0.3,
-    },
-  );
+  const result = await dispatchChat(deps, ctxR.context, {
+    model,
+    messages: [{ role: "system", content: system }, { role: "user", content: user }],
+    temperature: 0.3,
+  });
 
   if (!result.ok) {
     const exitCode = result.kind === "rate_limited" || result.kind === "auth" ? 3 : 1;

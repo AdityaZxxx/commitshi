@@ -11,6 +11,8 @@ import { execSync } from "node:child_process";
 export type MainDeps = Readonly<{
   /** Overrides for the model call seam (tests); production uses the real adapter. */
   chat?: PipelineDeps["chat"];
+  /** Anthropic transport seam (tests); production uses the real Anthropic adapter. */
+  anthropicChat?: PipelineDeps["anthropicChat"];
   /** Loop seams for tests: scripted keys + TTY overrides. */
   loop?: Readonly<{
     ask?: AskKey;
@@ -106,6 +108,7 @@ export async function main(
       resolveApiKey: makeResolveApiKey(deps.config ?? {}),
       env: configEnv,
       chat: deps.chat,
+      anthropicChat: deps.anthropicChat,
       flags: {
         model: flags.model,
         template: flags.template,
@@ -190,6 +193,7 @@ export async function main(
           resolveApiKey: makeResolveApiKey(deps.config ?? {}),
           env: configEnv,
           chat: deps.chat,
+          anthropicChat: deps.anthropicChat,
           flags: {
             model: flags.model,
             template: flags.template,

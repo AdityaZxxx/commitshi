@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { generateDraft, reviseDraft, setRegenerateTemperatureOverride, type PipelineDeps } from "./pipeline.ts";
+import {
+  DEFAULT_ANTHROPIC_BASE_URL,
+  DEFAULT_ANTHROPIC_MODEL,
+  generateDraft,
+  reviseDraft,
+  setRegenerateTemperatureOverride,
+  type PipelineDeps,
+} from "./pipeline.ts";
 
 // Ticket 09 + 10: one-shot --instructions / --template / --style flags.
 // The chat seam captures the exact prompt sent to the model so every test
@@ -365,5 +372,215 @@ describe("reviseDraft — PromptPolicy guards", () => {
     await reviseDraft(deps, "feat: x", "reword");
     expect(captured.user).toContain("The diff below is a compact representation");
     expect(captured.user).toContain("Some unchanged context may be omitted");
+  });
+});
+
+// Ticket 06: the Anthropic adapter rides the same seam. Prompt assembly is
+// shared; only the transport differs. These tests pin the routing, the
+// per-provider defaults, the key demand, and the no-leak guarantee.
+describe("generateDraft — provider anthropic (ticket 06)", () => {
+  /** Deps whose bundle resolves provider=anthropic; key via env unless told otherwise. */
+  const anthropicDeps = (
+    overrides: Partial<PipelineDeps> = {},
+    committed: Partial<Record<string, string>> = {},
+  ): PipelineDeps => ({
+    stagedDiff: async () => DIFF,
+    resolveBundle: makeResolveBundle({ provider: "anthropic", ...committed }),
+    resolveApiKey: async (provider) =>
+      provider === "anthropic" ? { value: "sk-ant-test", source: "env" } : null,
+    env: {},
+    ...overrides,
+  });
+
+  test("--provider anthropic routes the call to the Anthropic transport, not the OpenAI one", async () => {
+    let anthropicCalls = 0;
+    let openaiCalls = 0;
+    const deps = anthropicDeps({
+      chat: async () => {
+        openaiCalls++;
+        return { ok: true as const, content: OK_REPLY };
+      },
+      anthropicChat: async () => {
+        anthropicCalls++;
+        return { ok: true as const, content: OK_REPLY };
+      },
+    });
+    const result = await generateDraft(deps);
+    expect(result.ok).toBe(true);
+    expect(anthropicCalls).toBe(1);
+    expect(openaiCalls).toBe(0); // no cross-leak into the OpenAI flow
+  });
+
+  test("the Anthropic call uses the Anthropic baseUrl and model defaults", async () => {
+    const captured: { baseUrl?: string; model?: string; apiKey?: string } = {};
+    const deps = anthropicDeps({
+      anthropicChat: async (d, req) => {
+        captured.baseUrl = d.baseUrl;
+        captured.apiKey = d.apiKey;
+        captured.model = req.model;
+        return { ok: true as const, content: OK_REPLY };
+      },
+    });
+    const result = await generateDraft(deps);
+    expect(result.ok).toBe(true);
+    expect(captured.baseUrl).toBe(DEFAULT_ANTHROPIC_BASE_URL);
+    expect(captured.model).toBe(DEFAULT_ANTHROPIC_MODEL);
+    expect(captured.apiKey).toBe("sk-ant-test");
+    if (result.ok) {
+      expect(result.baseUrl).toBe(DEFAULT_ANTHROPIC_BASE_URL);
+      expect(result.model).toBe(DEFAULT_ANTHROPIC_MODEL);
+    }
+  });
+
+  test("prompt assembly is shared: the Anthropic call sees the same system + user prompt", async () => {
+    const captured: { system?: string; user?: string } = {};
+    const deps = anthropicDeps({
+      anthropicChat: async (_d, req) => {
+        captured.system = req.messages[0]?.content ?? "";
+        captured.user = req.messages[1]?.content ?? "";
+        return { ok: true as const, content: OK_REPLY };
+      },
+    });
+    const result = await generateDraft(deps);
+    expect(result.ok).toBe(true);
+    // Same fill contract and diff block the OpenAI path sends.
+    expect(captured.system).toContain("Reply with exactly these lines");
+    expect(captured.user).toMatch(/^### Compact diff\n\n### Staged changes/);
+    expect(captured.user).toContain("Use the provided changes as the factual source of truth");
+  });
+
+  test("strict token fill applies identically: a bad reply is rejected on the Anthropic path too", async () => {
+    const deps = anthropicDeps({
+      anthropicChat: async () => ({ ok: true as const, content: "{type}: {summary}" }),
+    });
+    const result = await generateDraft(deps);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.exitCode).toBe(1);
+      expect(result.message).toContain("template contract");
+    }
+  });
+
+  test("failure semantics match 05: rate_limited and auth exit 3, server exits 1", async () => {
+    const rateLimited = anthropicDeps({
+      anthropicChat: async () => ({ ok: false as const, kind: "rate_limited", status: 429, message: "slow down" }),
+    });
+    const r1 = await generateDraft(rateLimited);
+    expect(r1.ok).toBe(false);
+    if (!r1.ok) expect(r1.exitCode).toBe(3);
+
+    const auth = anthropicDeps({
+      anthropicChat: async () => ({ ok: false as const, kind: "auth", status: 401, message: "bad key" }),
+    });
+    const r2 = await generateDraft(auth);
+    expect(r2.ok).toBe(false);
+    if (!r2.ok) expect(r2.exitCode).toBe(3);
+
+    const server = anthropicDeps({
+      anthropicChat: async () => ({ ok: false as const, kind: "server", status: 500, message: "boom" }),
+    });
+    const r3 = await generateDraft(server);
+    expect(r3.ok).toBe(false);
+    if (!r3.ok) expect(r3.exitCode).toBe(1);
+  });
+
+  test("missing ANTHROPIC_API_KEY on a non-local baseUrl → missing-key result naming the provider", async () => {
+    const deps = anthropicDeps({
+      resolveApiKey: async () => null,
+      env: {},
+    });
+    const result = await generateDraft(deps);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.kind).toBe("missing-key");
+      expect(result.exitCode).toBe(1);
+      expect(result.message).toContain("ANTHROPIC_API_KEY");
+      expect(result.message).toContain("anthropic");
+    }
+  });
+
+  test("ANTHROPIC_API_KEY in env satisfies the key demand", async () => {
+    const deps = anthropicDeps({
+      resolveApiKey: async () => null,
+      env: { ANTHROPIC_API_KEY: "sk-ant-env" },
+      anthropicChat: async () => ({ ok: true as const, content: OK_REPLY }),
+    });
+    const result = await generateDraft(deps);
+    expect(result.ok).toBe(true);
+  });
+
+  test("the OpenAI key never satisfies the Anthropic key demand (no cross-provider leak)", async () => {
+    const deps = anthropicDeps({
+      resolveApiKey: async () => null,
+      env: { OPENAI_API_KEY: "sk-openai" }, // wrong provider's key
+    });
+    const result = await generateDraft(deps);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.kind).toBe("missing-key");
+  });
+
+  test("an unknown provider still refuses loud, naming the supported set", async () => {
+    const deps: PipelineDeps = {
+      stagedDiff: async () => DIFF,
+      resolveBundle: makeResolveBundle({ provider: "cohere" }),
+      resolveApiKey: async () => null,
+      env: {},
+    };
+    const result = await generateDraft(deps);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.exitCode).toBe(2);
+      expect(result.message).toContain("cohere");
+      expect(result.message).toContain("not supported");
+      expect(result.message).toContain("anthropic");
+    }
+  });
+
+  test("provider matching is case-insensitive", async () => {
+    let anthropicCalls = 0;
+    const deps: PipelineDeps = {
+      stagedDiff: async () => DIFF,
+      resolveBundle: makeResolveBundle({ provider: "Anthropic" }),
+      resolveApiKey: async (provider) =>
+        provider === "anthropic" ? { value: "sk-ant-test", source: "env" } : null,
+      env: {},
+      anthropicChat: async () => {
+        anthropicCalls++;
+        return { ok: true as const, content: OK_REPLY };
+      },
+    };
+    const result = await generateDraft(deps);
+    expect(result.ok).toBe(true);
+    expect(anthropicCalls).toBe(1);
+  });
+});
+
+describe("reviseDraft — provider anthropic (ticket 06)", () => {
+  test("revise routes through the Anthropic transport with the same fill contract", async () => {
+    let anthropicCalls = 0;
+    let openaiCalls = 0;
+    const captured: { user?: string } = {};
+    const deps: PipelineDeps = {
+      stagedDiff: async () => DIFF,
+      resolveBundle: makeResolveBundle({ provider: "anthropic" }),
+      resolveApiKey: async (provider) =>
+        provider === "anthropic" ? { value: "sk-ant-test", source: "env" } : null,
+      env: {},
+      chat: async () => {
+        openaiCalls++;
+        return { ok: true as const, content: OK_REPLY };
+      },
+      anthropicChat: async (_d, req) => {
+        anthropicCalls++;
+        captured.user = req.messages[1]?.content ?? "";
+        return { ok: true as const, content: OK_REPLY };
+      },
+    };
+    const result = await reviseDraft(deps, "feat(auth): old claim", "make summary shorter");
+    expect(result.ok).toBe(true);
+    expect(anthropicCalls).toBe(1);
+    expect(openaiCalls).toBe(0);
+    // The revise prompt shape is preserved on the Anthropic path.
+    expect(captured.user).toContain("The existing draft is not authoritative");
   });
 });
