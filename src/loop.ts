@@ -45,11 +45,7 @@ export type LoopDeps = Readonly<{
   revise?: (draft: string, instruction: string) => Promise<DraftAttempt>;
   /** Loader seam (tests): called around await regenerate(). Production shows
    *  the spinner; tests may inject a no-op. */
-  startLoader?: (
-    label: string,
-    write: (s: string) => void,
-    isTTY: boolean,
-  ) => { stop: () => void };
+  startLoader?: (label: string, write: (s: string) => void, isTTY: boolean) => { stop: () => void };
 }>;
 
 /** One draft under consideration, or the loud failure to produce one. */

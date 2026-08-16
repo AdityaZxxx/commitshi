@@ -10,10 +10,7 @@ export type ChatMessage = Readonly<{ role: "system" | "user"; content: string }>
  * contract is exactly what the adapters call — a URL plus an init object —
  * and test doubles satisfy it without casting to the runtime's fetch type.
  */
-export type FetchFn = (
-  url: string | URL | Request,
-  init?: RequestInit,
-) => Promise<Response>;
+export type FetchFn = (url: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
 export type CompletionRequest = Readonly<{
   model: string;

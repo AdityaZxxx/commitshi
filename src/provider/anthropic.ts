@@ -172,7 +172,10 @@ export async function anthropicMessages(
   // assertion only gives the unknown JSON a readable access path.
   const blocks = (json as { content?: Array<{ type?: string; text?: unknown }> }).content;
   const content = Array.isArray(blocks)
-    ? blocks.filter(isTextBlock).map((b) => b.text).join("")
+    ? blocks
+        .filter(isTextBlock)
+        .map((b) => b.text)
+        .join("")
     : undefined;
   if (content === undefined || content.trim() === "") {
     return {
