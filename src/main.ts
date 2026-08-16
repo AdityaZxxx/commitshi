@@ -1,14 +1,7 @@
 import { parseArgs, USAGE } from "./cli.ts";
 import { guardStagedChanges, recentCommitSubjects, stagedDiff } from "./git.ts";
 import { makeResolveApiKey, resolveBundle, type Deps } from "./config.ts";
-import {
-  generateDraft,
-  REGENERATE_TEMPERATURE,
-  reviseDraft,
-  setPreviousDraftOverride,
-  setRegenerateTemperatureOverride,
-  type PipelineDeps,
-} from "./pipeline.ts";
+import { draft, type DraftRequest, type DraftResult, type PipelineDeps } from "./pipeline.ts";
 import { interactLoop, type AskKey, type DraftAttempt } from "./loop.ts";
 import { commitAcceptedMessage, type CommitResult } from "./commit.ts";
 import { runSetup } from "./setup.ts";
@@ -101,31 +94,33 @@ export async function main(
 
   // Generate the first commit draft. The provider call and git reads are the
   // only IO; the model is the only stage that can fail here.
-  const attemptFrom = (result: Awaited<ReturnType<typeof generateDraft>>): DraftAttempt =>
+  const attemptFrom = (result: DraftResult): DraftAttempt =>
     result.ok
       ? { ok: true, draft: result.message, truncated: result.truncated, numstat: result.numstat }
       : { ok: false, exitCode: result.exitCode, message: result.message };
 
-  const runPipeline = (): ReturnType<typeof generateDraft> =>
-    generateDraft({
-      stagedDiff: () => stagedDiff(),
-      // Wire the history seam ONLY when the user opted in with --style:
-      // flags.style && recentCommitSubjects — without the flag the dep is
-      // absent and the no-history guarantee is structural, not a promise.
-      styleHistory: flags.style ? () => recentCommitSubjects() : undefined,
-      resolveBundle: (f) => resolveBundle(deps.config ?? {}, f),
-      resolveApiKey: makeResolveApiKey(deps.config ?? {}),
-      env: configEnv,
-      chat: deps.chat,
-      anthropicChat: deps.anthropicChat,
-      flags: {
-        model: flags.model,
-        template: flags.template,
-        provider: flags.provider,
-        baseUrl: flags.baseUrl,
-        instructions: flags.instructions,
-      },
-    });
+  // One wiring for every draft the run makes — first, regenerate, and revise
+  // all cross the same pipeline interface; only the request's intent varies.
+  const pipelineDeps: PipelineDeps = {
+    stagedDiff: () => stagedDiff(),
+    // Wire the history seam ONLY when the user opted in with --style:
+    // flags.style && recentCommitSubjects — without the flag the dep is
+    // absent and the no-history guarantee is structural, not a promise.
+    styleHistory: flags.style ? () => recentCommitSubjects() : undefined,
+    resolveBundle: (f) => resolveBundle(deps.config ?? {}, f),
+    resolveApiKey: makeResolveApiKey(deps.config ?? {}),
+    env: configEnv,
+    chat: deps.chat,
+    anthropicChat: deps.anthropicChat,
+    flags: {
+      model: flags.model,
+      template: flags.template,
+      provider: flags.provider,
+      baseUrl: flags.baseUrl,
+      instructions: flags.instructions,
+    },
+  };
+  const runDraft = (request: DraftRequest): Promise<DraftResult> => draft(pipelineDeps, request);
 
   // Generate the first draft. Key demand is the pipeline's call, reported
   // as a draft result; main's only job is mapping the missing-key variant:
@@ -133,9 +128,9 @@ export async function main(
   // otherwise the result's message is printed and its exit code used.
   const loaderStream = flags.noCommit ? stderr : stdout;
   const firstLoader = startLoader("generating draft…", (s) => loaderStream.write(s), stdoutIsTTY);
-  let firstResult: Awaited<ReturnType<typeof runPipeline>>;
+  let firstResult: DraftResult;
   try {
-    firstResult = await runPipeline();
+    firstResult = await runDraft({ kind: "fresh" });
   } finally {
     firstLoader.stop();
   }
@@ -160,7 +155,7 @@ export async function main(
             )
           ).exitCode;
     if (code !== 0) return code;
-    firstResult = await runPipeline();
+    firstResult = await runDraft({ kind: "fresh" });
   }
   const first = attemptFrom(firstResult);
 
@@ -196,42 +191,12 @@ export async function main(
     ask: loopDeps?.ask,
     // Regenerate re-runs the SAME pipeline against the SAME unchanged staged
     // diff: stagedDiff() is read fresh, but the staged set is untouched. The
-    // draft being replaced is passed down so the model writes a different one.
-    regenerate: async (previousDraft) => {
-      setRegenerateTemperatureOverride(REGENERATE_TEMPERATURE);
-      setPreviousDraftOverride(previousDraft);
-      try {
-        return attemptFrom(await runPipeline());
-      } finally {
-        setRegenerateTemperatureOverride(null);
-        setPreviousDraftOverride(null);
-      }
-    },
-    revise: async (draft: string, instruction: string) => {
-      const result = await reviseDraft(
-        {
-          stagedDiff: () => stagedDiff(),
-          styleHistory: flags.style ? () => recentCommitSubjects() : undefined,
-          resolveBundle: (f) => resolveBundle(deps.config ?? {}, f),
-          resolveApiKey: makeResolveApiKey(deps.config ?? {}),
-          env: configEnv,
-          chat: deps.chat,
-          anthropicChat: deps.anthropicChat,
-          flags: {
-            model: flags.model,
-            template: flags.template,
-            provider: flags.provider,
-            baseUrl: flags.baseUrl,
-            instructions: flags.instructions,
-          },
-        },
-        draft,
-        instruction,
-      );
-      return result.ok
-        ? { ok: true, draft: result.message, truncated: result.truncated, numstat: result.numstat }
-        : { ok: false, exitCode: result.exitCode, message: result.message };
-    },
+    // draft being replaced travels in the request so the model writes a
+    // different one — no state is set or reset around the call.
+    regenerate: async (previousDraft) =>
+      attemptFrom(await runDraft({ kind: "regenerate", previousDraft })),
+    revise: async (currentDraft: string, instruction: string) =>
+      attemptFrom(await runDraft({ kind: "revise", draft: currentDraft, instruction })),
   });
 
   if (!outcome.ok) {

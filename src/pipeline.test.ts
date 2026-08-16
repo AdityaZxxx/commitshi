@@ -2,10 +2,9 @@ import { describe, expect, test } from "bun:test";
 import {
   DEFAULT_ANTHROPIC_BASE_URL,
   DEFAULT_ANTHROPIC_MODEL,
-  generateDraft,
-  reviseDraft,
-  setPreviousDraftOverride,
-  setRegenerateTemperatureOverride,
+  draft,
+  REGENERATE_TEMPERATURE,
+  REVISE_TEMPERATURE,
   type PipelineDeps,
 } from "./pipeline.ts";
 
@@ -68,11 +67,11 @@ const baseDeps = (committed: Partial<Record<string, string>> = {}): PipelineDeps
 
 const OK_REPLY = "type: feat\nscope: auth\nsummary: add login helper\nbody: -";
 
-describe("generateDraft — default prompt is untouched (regression from 05)", () => {
+describe("draft — default prompt is untouched (regression from 05)", () => {
   test("no flags: user block and style block are absent, prompt is byte-stable", async () => {
     const captured: PromptCapture = {};
     const deps: PipelineDeps = { ...baseDeps(), chat: makeRecordingChat(OK_REPLY, captured) };
-    const first = await generateDraft(deps);
+    const first = await draft(deps, { kind: "fresh" });
     expect(first.ok).toBe(true);
 
     expect(captured.user).not.toContain("### Style history");
@@ -81,7 +80,7 @@ describe("generateDraft — default prompt is untouched (regression from 05)", (
     // Byte-identical across runs: the flag-less prompt is the ticket-05
     // shape — compact diff + fixed closing instruction, nothing else.
     const again: PromptCapture = {};
-    await generateDraft({ ...baseDeps(), chat: makeRecordingChat(OK_REPLY, again) });
+    await draft({ ...baseDeps(), chat: makeRecordingChat(OK_REPLY, again) }, { kind: "fresh" });
     expect(again.user).toBe(captured.user);
     // Contract: diff first, closing instruction last, and no
     // ticket-09/10 sections (Staged changes header inside the digest is
@@ -93,7 +92,7 @@ describe("generateDraft — default prompt is untouched (regression from 05)", (
   });
 });
 
-describe("generateDraft — --instructions (ticket 09)", () => {
+describe("draft — --instructions (ticket 09)", () => {
   test("instructions land in the prompt as their own block, after the diff", async () => {
     const captured: PromptCapture = {};
     const deps: PipelineDeps = {
@@ -101,7 +100,7 @@ describe("generateDraft — --instructions (ticket 09)", () => {
       chat: makeRecordingChat(OK_REPLY, captured),
       flags: { instructions: "always use the type 'refactor' and skip the scope" },
     };
-    const result = await generateDraft(deps);
+    const result = await draft(deps, { kind: "fresh" });
     expect(result.ok).toBe(true);
     expect(captured.user).toContain("### User instructions");
     expect(captured.user).toContain("always use the type 'refactor'");
@@ -119,7 +118,7 @@ describe("generateDraft — --instructions (ticket 09)", () => {
       chat: makeRecordingChat(OK_REPLY, captured),
       flags: { instructions: "reword the summary" },
     };
-    await generateDraft(deps);
+    await draft(deps, { kind: "fresh" });
     // Fill contract lives in the system prompt now
     expect(captured.system).toContain("Reply with exactly these lines");
     expect(captured.system).toContain("Fill every line");
@@ -138,10 +137,13 @@ describe("generateDraft — --instructions (ticket 09)", () => {
       ),
       flags: { instructions: "also add a freeform notes paragraph after the message" },
     };
-    const result = await generateDraft({
-      ...deps,
-      flags: { ...deps.flags, template: "{summary}" },
-    });
+    const result = await draft(
+      {
+        ...deps,
+        flags: { ...deps.flags, template: "{summary}" },
+      },
+      { kind: "fresh" },
+    );
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.message).toContain("template contract");
   });
@@ -153,13 +155,13 @@ describe("generateDraft — --instructions (ticket 09)", () => {
       chat: makeRecordingChat(OK_REPLY, captured),
       flags: { instructions: "   \n " },
     };
-    const result = await generateDraft(deps);
+    const result = await draft(deps, { kind: "fresh" });
     expect(result.ok).toBe(true);
     expect(captured.user).not.toContain("### User instructions");
   });
 });
 
-describe("generateDraft — --template one-shot override (ticket 09)", () => {
+describe("draft — --template one-shot override (ticket 09)", () => {
   const COMMITTED = "{type}({scope}): {summary}";
 
   test("--template beats the configured template for that run only", async () => {
@@ -170,7 +172,7 @@ describe("generateDraft — --template one-shot override (ticket 09)", () => {
       // …but the flag's template wins this run.
       flags: { template: "{type}: {summary}" },
     };
-    const result = await generateDraft(deps);
+    const result = await draft(deps, { kind: "fresh" });
     expect(result.ok).toBe(true);
     expect(result.ok && result.message).toBe("fix: squash the flake");
     // The prompt names exactly the flag template's tokens — the persisted
@@ -186,24 +188,27 @@ describe("generateDraft — --template one-shot override (ticket 09)", () => {
       // The reply fills exactly the committed template's three tokens.
       chat: makeRecordingChat("type: feat\nscope: auth\nsummary: add login helper", captured),
     };
-    const result = await generateDraft(deps);
+    const result = await draft(deps, { kind: "fresh" });
     expect(result.ok).toBe(true);
     expect(result.ok && result.message).toBe("feat(auth): add login helper");
   });
 });
 
-describe("generateDraft — --style (ticket 10)", () => {
+describe("draft — --style (ticket 10)", () => {
   test("no styleHistory seam: the chat runs once and the prompt carries no history at all", async () => {
     // "Absent means never read" — with no seam wired there is no history
     // code path to invoke; the assertion is inside the chat stub itself.
-    const result = await generateDraft({
-      ...baseDeps(),
-      styleHistory: undefined,
-      chat: async (_d, req) => {
-        expect(req.messages[1]?.content).not.toContain("### Style history");
-        return { ok: true as const, content: OK_REPLY };
+    const result = await draft(
+      {
+        ...baseDeps(),
+        styleHistory: undefined,
+        chat: async (_d, req) => {
+          expect(req.messages[1]?.content).not.toContain("### Style history");
+          return { ok: true as const, content: OK_REPLY };
+        },
       },
-    });
+      { kind: "fresh" },
+    );
     expect(result.ok).toBe(true);
   });
 
@@ -219,7 +224,7 @@ describe("generateDraft — --style (ticket 10)", () => {
       styleHistory: async () => subjects,
       chat: makeRecordingChat(OK_REPLY, captured),
     };
-    const result = await generateDraft(deps);
+    const result = await draft(deps, { kind: "fresh" });
     expect(result.ok).toBe(true);
     expect(captured.user).toContain("### Style history");
     for (const s of subjects) expect(captured.user).toContain(s);
@@ -235,7 +240,7 @@ describe("generateDraft — --style (ticket 10)", () => {
       styleHistory: async () => [], // fresh repo, unborn HEAD
       chat: makeRecordingChat(OK_REPLY, captured),
     };
-    const result = await generateDraft(deps);
+    const result = await draft(deps, { kind: "fresh" });
     expect(result.ok).toBe(true);
     expect(result.ok && result.message).toBe("feat(auth): add login helper");
     expect(captured.user).not.toContain("### Style history");
@@ -252,7 +257,7 @@ describe("generateDraft — --style (ticket 10)", () => {
     };
     // History must never break the draft — a failing seam is exactly the
     // fresh-repo case.
-    const result = await generateDraft(deps);
+    const result = await draft(deps, { kind: "fresh" });
     expect(result.ok).toBe(true);
     expect(captured.user).not.toContain("### Style history");
   });
@@ -265,7 +270,7 @@ describe("generateDraft — --style (ticket 10)", () => {
       flags: { instructions: "short subject" },
       chat: makeRecordingChat(OK_REPLY, captured),
     };
-    const result = await generateDraft(deps);
+    const result = await draft(deps, { kind: "fresh" });
     expect(result.ok).toBe(true);
     expect(captured.user).toContain("### Style history");
     expect(captured.user).toContain("### User instructions");
@@ -275,17 +280,20 @@ describe("generateDraft — --style (ticket 10)", () => {
   });
 });
 
-describe("generateDraft — template seam (ticket 15/16 hardening)", () => {
+describe("draft — template seam (ticket 15/16 hardening)", () => {
   test("a malformed template fails before the model call, exit 2, zero chat traffic", async () => {
     let chatCalls = 0;
-    const result = await generateDraft({
-      ...baseDeps(),
-      flags: { template: "{nope}: {summary}" },
-      chat: async () => {
-        chatCalls++;
-        return { ok: true as const, content: OK_REPLY };
+    const result = await draft(
+      {
+        ...baseDeps(),
+        flags: { template: "{nope}: {summary}" },
+        chat: async () => {
+          chatCalls++;
+          return { ok: true as const, content: OK_REPLY };
+        },
       },
-    });
+      { kind: "fresh" },
+    );
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.exitCode).toBe(2);
@@ -297,13 +305,16 @@ describe("generateDraft — template seam (ticket 15/16 hardening)", () => {
 
   test("the system prompt carries the fill contract, worded by the template's tokens", async () => {
     const captured: PromptCapture = {};
-    await generateDraft({
-      ...baseDeps(),
-      chat: async (_d, req) => {
-        captured.system = req.messages[0]?.content ?? "";
-        return { ok: true as const, content: OK_REPLY };
+    await draft(
+      {
+        ...baseDeps(),
+        chat: async (_d, req) => {
+          captured.system = req.messages[0]?.content ?? "";
+          return { ok: true as const, content: OK_REPLY };
+        },
       },
-    });
+      { kind: "fresh" },
+    );
     // The prose rules (the contract on the way out) now live in template.ts
     // next to strictFill (the contract on the way in) — pinning the two
     // sides of the same promise in one capture.
@@ -313,7 +324,7 @@ describe("generateDraft — template seam (ticket 15/16 hardening)", () => {
   });
 });
 
-describe("generateDraft — regenerate temperature (ticket r)", () => {
+describe("draft — temperature follows the request's intent (ticket r)", () => {
   // The chat stub captures the CompletionRequest so the wire-level temperature
   // is the assertion target — matches the existing prompt-content pattern.
   const captureTemperature = () => {
@@ -325,75 +336,72 @@ describe("generateDraft — regenerate temperature (ticket r)", () => {
     return { chat, temperatures };
   };
 
-  test("initial call sends temperature: 0", async () => {
+  test("fresh sends temperature: 0", async () => {
     const { chat, temperatures } = captureTemperature();
-    await generateDraft({ ...baseDeps(), chat });
+    await draft({ ...baseDeps(), chat }, { kind: "fresh" });
     expect(temperatures).toEqual([0]);
   });
 
-  test("regenerate call (override active) sends temperature: 0.3", async () => {
+  test("regenerate sends REGENERATE_TEMPERATURE", async () => {
     const { chat, temperatures } = captureTemperature();
-    setRegenerateTemperatureOverride(0.3);
-    try {
-      await generateDraft({ ...baseDeps(), chat });
-    } finally {
-      setRegenerateTemperatureOverride(null);
-    }
-    expect(temperatures).toEqual([0.3]);
+    await draft(
+      { ...baseDeps(), chat },
+      { kind: "regenerate", previousDraft: "feat(a): do the thing" },
+    );
+    expect(temperatures).toEqual([REGENERATE_TEMPERATURE]);
   });
 
-  test("a second initial call after a regenerate sends temperature: 0 — the override does not leak", async () => {
+  test("revise sends REVISE_TEMPERATURE", async () => {
     const { chat, temperatures } = captureTemperature();
-    setRegenerateTemperatureOverride(0.3);
-    await generateDraft({ ...baseDeps(), chat });
-    setRegenerateTemperatureOverride(null);
-    await generateDraft({ ...baseDeps(), chat });
-    expect(temperatures).toEqual([0.3, 0]);
+    await draft(
+      { ...baseDeps(), chat },
+      { kind: "revise", draft: "feat(a): do the thing", instruction: "shorter" },
+    );
+    expect(temperatures).toEqual([REVISE_TEMPERATURE]);
   });
 
-  test("reset-on-entry: an override that survives its caller does not leak beyond the call it armed", async () => {
+  test("no state between calls: a regenerate never leaks into the next fresh call", async () => {
     const { chat, temperatures } = captureTemperature();
-    setRegenerateTemperatureOverride(0.3); // simulate a regenerate site that forgets to clear
-    await generateDraft({ ...baseDeps(), chat }); // entry consumes the override, then clears
-    // No explicit clear — but the next entry must find null, not 0.3.
-    await generateDraft({ ...baseDeps(), chat });
-    setRegenerateTemperatureOverride(null);
-    expect(temperatures).toEqual([0.3, 0]);
+    await draft(
+      { ...baseDeps(), chat },
+      { kind: "regenerate", previousDraft: "feat(a): do the thing" },
+    );
+    await draft({ ...baseDeps(), chat }, { kind: "fresh" });
+    expect(temperatures).toEqual([REGENERATE_TEMPERATURE, 0]);
   });
 });
 
-describe("generateDraft — previous draft on regenerate", () => {
-  test("initial call has no previous-draft block", async () => {
+describe("draft — previous draft on regenerate", () => {
+  test("fresh has no previous-draft block", async () => {
     const captured: PromptCapture = {};
-    await generateDraft({ ...baseDeps(), chat: makeRecordingChat(OK_REPLY, captured) });
+    await draft({ ...baseDeps(), chat: makeRecordingChat(OK_REPLY, captured) }, { kind: "fresh" });
     expect(captured.user).not.toContain("### Previous draft");
   });
 
-  test("regenerate call shows the previous draft and demands a different one", async () => {
+  test("regenerate shows the previous draft and demands a different one", async () => {
     const captured: PromptCapture = {};
-    setPreviousDraftOverride("feat(a): do the thing");
-    try {
-      await generateDraft({ ...baseDeps(), chat: makeRecordingChat(OK_REPLY, captured) });
-    } finally {
-      setPreviousDraftOverride(null);
-    }
+    await draft(
+      { ...baseDeps(), chat: makeRecordingChat(OK_REPLY, captured) },
+      { kind: "regenerate", previousDraft: "feat(a): do the thing" },
+    );
     expect(captured.user).toContain("### Previous draft");
     expect(captured.user).toContain("feat(a): do the thing");
     expect(captured.user).toContain("Write a DIFFERENT draft");
   });
 
-  test("the override does not leak into the next initial call", async () => {
+  test("the previous draft travels in the request: the next fresh call sees none of it", async () => {
     const captured: PromptCapture = {};
-    setPreviousDraftOverride("feat(a): do the thing");
-    await generateDraft({ ...baseDeps(), chat: makeRecordingChat(OK_REPLY, captured) });
-    setPreviousDraftOverride(null);
+    await draft(
+      { ...baseDeps(), chat: makeRecordingChat(OK_REPLY, captured) },
+      { kind: "regenerate", previousDraft: "feat(a): do the thing" },
+    );
     const again: PromptCapture = {};
-    await generateDraft({ ...baseDeps(), chat: makeRecordingChat(OK_REPLY, again) });
+    await draft({ ...baseDeps(), chat: makeRecordingChat(OK_REPLY, again) }, { kind: "fresh" });
     expect(again.user).not.toContain("### Previous draft");
   });
 });
 
-describe("reviseDraft — PromptPolicy guards", () => {
+describe("draft (revise) — PromptPolicy guards", () => {
   test("user prompt marks existing draft as candidate, not authority", async () => {
     const captured: PromptCapture = {};
     const deps: PipelineDeps = {
@@ -406,7 +414,11 @@ describe("reviseDraft — PromptPolicy guards", () => {
       },
       flags: {},
     };
-    const res = await reviseDraft(deps, "feat(auth): old claim", "make summary shorter");
+    const res = await draft(deps, {
+      kind: "revise",
+      draft: "feat(auth): old claim",
+      instruction: "make summary shorter",
+    });
     expect(res.ok).toBe(true);
     expect(captured.user).toContain("The existing draft is not authoritative");
     expect(captured.user).toContain("Re-check its factual claims against the compacted diff");
@@ -424,7 +436,7 @@ describe("reviseDraft — PromptPolicy guards", () => {
         return { ok: true as const, content: OK_REPLY };
       },
     };
-    await reviseDraft(deps, "feat: x", "reword");
+    await draft(deps, { kind: "revise", draft: "feat: x", instruction: "reword" });
     expect(captured.user).toContain("The diff below is a compact representation");
     expect(captured.user).toContain("Some unchanged context may be omitted");
   });
@@ -433,7 +445,7 @@ describe("reviseDraft — PromptPolicy guards", () => {
 // Ticket 06: the Anthropic adapter rides the same seam. Prompt assembly is
 // shared; only the transport differs. These tests pin the routing, the
 // per-provider defaults, the key demand, and the no-leak guarantee.
-describe("generateDraft — provider anthropic (ticket 06)", () => {
+describe("draft — provider anthropic (ticket 06)", () => {
   /** Deps whose bundle resolves provider=anthropic; key via env unless told otherwise. */
   const anthropicDeps = (
     overrides: Partial<PipelineDeps> = {},
@@ -460,7 +472,7 @@ describe("generateDraft — provider anthropic (ticket 06)", () => {
         return { ok: true as const, content: OK_REPLY };
       },
     });
-    const result = await generateDraft(deps);
+    const result = await draft(deps, { kind: "fresh" });
     expect(result.ok).toBe(true);
     expect(anthropicCalls).toBe(1);
     expect(openaiCalls).toBe(0); // no cross-leak into the OpenAI flow
@@ -476,7 +488,7 @@ describe("generateDraft — provider anthropic (ticket 06)", () => {
         return { ok: true as const, content: OK_REPLY };
       },
     });
-    const result = await generateDraft(deps);
+    const result = await draft(deps, { kind: "fresh" });
     expect(result.ok).toBe(true);
     expect(captured.baseUrl).toBe(DEFAULT_ANTHROPIC_BASE_URL);
     expect(captured.model).toBe(DEFAULT_ANTHROPIC_MODEL);
@@ -496,7 +508,7 @@ describe("generateDraft — provider anthropic (ticket 06)", () => {
         return { ok: true as const, content: OK_REPLY };
       },
     });
-    const result = await generateDraft(deps);
+    const result = await draft(deps, { kind: "fresh" });
     expect(result.ok).toBe(true);
     // Same fill contract and diff block the OpenAI path sends.
     expect(captured.system).toContain("Reply with exactly these lines");
@@ -508,7 +520,7 @@ describe("generateDraft — provider anthropic (ticket 06)", () => {
     const deps = anthropicDeps({
       anthropicChat: async () => ({ ok: true as const, content: "{type}: {summary}" }),
     });
-    const result = await generateDraft(deps);
+    const result = await draft(deps, { kind: "fresh" });
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.exitCode).toBe(1);
@@ -525,7 +537,7 @@ describe("generateDraft — provider anthropic (ticket 06)", () => {
         message: "slow down",
       }),
     });
-    const r1 = await generateDraft(rateLimited);
+    const r1 = await draft(rateLimited, { kind: "fresh" });
     expect(r1.ok).toBe(false);
     if (!r1.ok) expect(r1.exitCode).toBe(3);
 
@@ -537,7 +549,7 @@ describe("generateDraft — provider anthropic (ticket 06)", () => {
         message: "bad key",
       }),
     });
-    const r2 = await generateDraft(auth);
+    const r2 = await draft(auth, { kind: "fresh" });
     expect(r2.ok).toBe(false);
     if (!r2.ok) expect(r2.exitCode).toBe(3);
 
@@ -549,7 +561,7 @@ describe("generateDraft — provider anthropic (ticket 06)", () => {
         message: "boom",
       }),
     });
-    const r3 = await generateDraft(server);
+    const r3 = await draft(server, { kind: "fresh" });
     expect(r3.ok).toBe(false);
     if (!r3.ok) expect(r3.exitCode).toBe(1);
   });
@@ -559,7 +571,7 @@ describe("generateDraft — provider anthropic (ticket 06)", () => {
       resolveApiKey: async () => null,
       env: {},
     });
-    const result = await generateDraft(deps);
+    const result = await draft(deps, { kind: "fresh" });
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.kind).toBe("missing-key");
@@ -575,7 +587,7 @@ describe("generateDraft — provider anthropic (ticket 06)", () => {
       env: { ANTHROPIC_API_KEY: "sk-ant-env" },
       anthropicChat: async () => ({ ok: true as const, content: OK_REPLY }),
     });
-    const result = await generateDraft(deps);
+    const result = await draft(deps, { kind: "fresh" });
     expect(result.ok).toBe(true);
   });
 
@@ -584,7 +596,7 @@ describe("generateDraft — provider anthropic (ticket 06)", () => {
       resolveApiKey: async () => null,
       env: { OPENAI_API_KEY: "sk-openai" }, // wrong provider's key
     });
-    const result = await generateDraft(deps);
+    const result = await draft(deps, { kind: "fresh" });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.kind).toBe("missing-key");
   });
@@ -596,7 +608,7 @@ describe("generateDraft — provider anthropic (ticket 06)", () => {
       resolveApiKey: async () => null,
       env: {},
     };
-    const result = await generateDraft(deps);
+    const result = await draft(deps, { kind: "fresh" });
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.exitCode).toBe(2);
@@ -619,13 +631,13 @@ describe("generateDraft — provider anthropic (ticket 06)", () => {
         return { ok: true as const, content: OK_REPLY };
       },
     };
-    const result = await generateDraft(deps);
+    const result = await draft(deps, { kind: "fresh" });
     expect(result.ok).toBe(true);
     expect(anthropicCalls).toBe(1);
   });
 });
 
-describe("reviseDraft — provider anthropic (ticket 06)", () => {
+describe("draft (revise) — provider anthropic (ticket 06)", () => {
   test("revise routes through the Anthropic transport with the same fill contract", async () => {
     let anthropicCalls = 0;
     let openaiCalls = 0;
@@ -646,7 +658,11 @@ describe("reviseDraft — provider anthropic (ticket 06)", () => {
         return { ok: true as const, content: OK_REPLY };
       },
     };
-    const result = await reviseDraft(deps, "feat(auth): old claim", "make summary shorter");
+    const result = await draft(deps, {
+      kind: "revise",
+      draft: "feat(auth): old claim",
+      instruction: "make summary shorter",
+    });
     expect(result.ok).toBe(true);
     expect(anthropicCalls).toBe(1);
     expect(openaiCalls).toBe(0);

@@ -134,8 +134,9 @@ describe("no silent history reads (ticket 10 acceptance)", () => {
 
   test("pipeline.ts declares history strictly optional and default-absent", async () => {
     const text = await readFile("src/pipeline.ts", "utf8");
-    // styleHistory is `?:` — the no-flag path carries no seam at all.
+    // styleHistory is `?:` — the no-flag path carries no seam at all, and the
+    // one place that reads it refuses an absent seam before any read.
     expect(text).toContain("styleHistory?:");
-    expect(text).toContain("if (deps.styleHistory !== undefined)");
+    expect(text).toContain("if (deps.styleHistory === undefined) return null;");
   });
 });

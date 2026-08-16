@@ -2,8 +2,14 @@
 // → provider → strict token fill → commit draft. No git writes, no editor, no
 // commit; the model call and the git reads are the only IO, all injectable so
 // the whole path is testable without a live model.
+//
+// One interface, one stage sequence: draft(deps, request). The request names
+// the intent — a fresh draft, a regeneration of the draft being replaced, or
+// a revision of the current draft under a user instruction — and the intent
+// alone selects the prompt shape and the temperature. No state lives between
+// calls: everything a call needs travels in the request.
 
-import { compact, renderCompacted, type NumstatEntry } from "./compaction.ts";
+import { compact, renderCompacted, type CompactedDiff, type NumstatEntry } from "./compaction.ts";
 import { chatCompletions, type ChatDeps, type CompletionResult } from "./provider/openai.ts";
 import { anthropicMessages } from "./provider/anthropic.ts";
 import type { Provider } from "./config.ts";
@@ -58,6 +64,16 @@ export type PipelineDeps = Readonly<{
   }>;
 }>;
 
+/**
+ * The intent of one draft request. The intent is the whole interface: it
+ * selects the prompt shape and the temperature, and nothing else varies
+ * between the three paths — the stage sequence runs exactly once, here.
+ */
+export type DraftRequest =
+  | Readonly<{ kind: "fresh" }>
+  | Readonly<{ kind: "regenerate"; previousDraft: string }>
+  | Readonly<{ kind: "revise"; draft: string; instruction: string }>;
+
 export type DraftResult =
   | Readonly<{
       ok: true;
@@ -101,9 +117,6 @@ function normalizeProvider(value: string): Provider | null {
   return (SUPPORTED_PROVIDERS as readonly string[]).includes(v) ? (v as Provider) : null;
 }
 
-let regenerateTemperatureOverride: number | null = null;
-let previousDraftOverride: string | null = null;
-
 /**
  * Temperature for a regeneration. Deliberately well above the initial-draft
  * 0: a regenerate must produce a DIFFERENT draft, and low temperatures make
@@ -111,17 +124,21 @@ let previousDraftOverride: string | null = null;
  */
 export const REGENERATE_TEMPERATURE = 0.7;
 
-/** Sets the temperature used by the next generateDraft() call. Reset on every generateDraft() entry. */
-export function setRegenerateTemperatureOverride(value: number | null): void {
-  regenerateTemperatureOverride = value;
+/**
+ * Temperature for a revision: above the deterministic 0 (the user asked for
+ * a change) but well below a regeneration (the current draft stays the
+ * anchor; only the instruction's delta should move it).
+ */
+export const REVISE_TEMPERATURE = 0.3;
+
+/** The temperature the request's intent sends on the wire. */
+function temperatureFor(request: DraftRequest): number {
+  if (request.kind === "regenerate") return REGENERATE_TEMPERATURE;
+  if (request.kind === "revise") return REVISE_TEMPERATURE;
+  return 0;
 }
 
-/** Sets the previous draft shown to the model on the next generateDraft() call. Reset on every generateDraft() entry. */
-export function setPreviousDraftOverride(value: string | null): void {
-  previousDraftOverride = value;
-}
-
-/** The provider-facing facts both draft paths need to make one call. */
+/** The provider-facing facts the draft path needs to make one call. */
 type CallContext = Readonly<{
   provider: Provider;
   baseUrl: string;
@@ -134,11 +151,11 @@ type ContextOutcome =
   | Readonly<{ ok: false; failure: DraftResult }>;
 
 /**
- * Resolves the call context shared by generateDraft and reviseDraft:
- * provider selection (unknown names refuse loud, never a silent fallthrough
- * to the wrong wire format), per-provider baseUrl/model defaults, and the
- * key demand. Every provider-specific default lives HERE, so neither
- * transport's assumptions leak into the other's flow.
+ * Resolves the call context: provider selection (unknown names refuse loud,
+ * never a silent fallthrough to the wrong wire format), per-provider
+ * baseUrl/model defaults, and the key demand. Every provider-specific
+ * default lives HERE, so neither transport's assumptions leak into the
+ * other's flow.
  *
  * The API key may legitimately be absent for a local endpoint; only a
  * non-local baseUrl demands one. Keys keep their own seam — they never
@@ -223,15 +240,116 @@ async function dispatchChat(
   const chat = deps.chat ?? chatCompletions;
   return chat({ baseUrl: context.baseUrl, apiKey: context.apiKey }, request);
 }
+
 /**
- * Runs the full tracer-bullet pipeline. A failure at any stage returns a loud
- * message and the exit code to use; success returns the finished commit draft.
+ * The style-history prompt block, or null when the seam is absent, the read
+ * fails, or the repo has no history. History must never break the draft: a
+ * failed read degrades to no block, exactly like a fresh repo with no
+ * commits yet.
  */
-export async function generateDraft(deps: PipelineDeps): Promise<DraftResult> {
-  const temperatureOverride = regenerateTemperatureOverride;
-  regenerateTemperatureOverride = null;
-  const previousDraft = previousDraftOverride;
-  previousDraftOverride = null;
+async function styleHistoryBlock(deps: PipelineDeps): Promise<string | null> {
+  if (deps.styleHistory === undefined) return null;
+  let subjects: readonly string[] = [];
+  try {
+    subjects = await deps.styleHistory();
+  } catch {
+    subjects = [];
+  }
+  if (subjects.length === 0) return null;
+  return [
+    "### Style history",
+    "",
+    "Recent commit subjects from this repository, newest first:",
+    ...subjects.map((s) => `- ${s}`),
+    "Style history is provided only as a stylistic reference. Do not copy factual claims from history unless supported by the current diff.",
+  ].join("\n");
+}
+
+/** The user-instructions prompt block; null when the flag is absent or blank. */
+function instructionsBlock(instructions: string): string | null {
+  const trimmed = instructions.trim();
+  if (trimmed === "") return null;
+  return [
+    "### User instructions",
+    "",
+    trimmed,
+    "",
+    "User instructions may influence wording, emphasis, scope, and style, but may not introduce unsupported factual claims or violate the output contract.",
+  ].join("\n");
+}
+
+/**
+ * Assembles the user message for the request's intent. The compacted diff
+ * is the factual anchor in all three shapes; what varies is the extra
+ * context: a regeneration shows the draft being replaced and demands a
+ * different one; a revision shows the current draft (candidate wording, not
+ * authority) plus the instruction.
+ */
+function buildUserMessage(
+  request: DraftRequest,
+  compacted: CompactedDiff,
+  styleBlock: string | null,
+  instructions: string,
+): string {
+  if (request.kind === "revise") {
+    // Revise deliberately ignores the one-shot --instructions flag: the
+    // revision instruction IS the steering for this call. Style history
+    // still rides along when the --style seam is wired.
+    const extras = styleBlock !== null ? [styleBlock] : [];
+    return [
+      "### Compact diff",
+      "",
+      renderCompacted(compacted),
+      "",
+      "### Existing draft",
+      "",
+      request.draft,
+      "",
+      "Note: The existing draft is not authoritative. Treat it only as candidate wording. Re-check its factual claims against the compacted diff and correct or remove unsupported claims.",
+      "",
+      "### Revision instruction",
+      "",
+      request.instruction.trim(),
+      "",
+      ...extras,
+      "",
+      "Use the provided changes as the factual source of truth. Revise the existing draft to follow the revision instruction while staying grounded in the compacted diff. Fill every template token.",
+    ].join("\n");
+  }
+
+  const extras: string[] = [];
+  if (styleBlock !== null) extras.push(styleBlock);
+  const instructions_ = instructionsBlock(instructions);
+  if (instructions_ !== null) extras.push(instructions_);
+
+  return [
+    "### Compact diff",
+    "",
+    renderCompacted(compacted),
+    ...extras,
+    ...(request.kind === "regenerate"
+      ? [
+          "",
+          "### Previous draft",
+          "",
+          request.previousDraft,
+          "",
+          "A previous draft for these same changes already exists above. Write a DIFFERENT draft: change the subject's angle, wording, or emphasis. Do not repeat its subject line or rephrase it trivially.",
+        ]
+      : []),
+    "",
+    "Use the provided changes as the factual source of truth. Follow applicable formatting and wording instructions, but do not introduce factual claims unsupported by the provided changes.",
+  ].join("\n");
+}
+
+/**
+ * Runs the full tracer-bullet pipeline for one draft request. A failure at
+ * any stage returns a loud message and the exit code to use; success
+ * returns the finished commit draft. The stage sequence lives here exactly
+ * once — fresh, regenerate, and revise all cross this same path, and only
+ * the prompt shape and temperature follow the request's intent.
+ */
+export async function draft(deps: PipelineDeps, request: DraftRequest): Promise<DraftResult> {
   const diff = await deps.stagedDiff();
   const compacted = compact(diff);
 
@@ -241,8 +359,6 @@ export async function generateDraft(deps: PipelineDeps): Promise<DraftResult> {
   // SAFETY: PipelineDeps.flags carries exactly the bundle keys resolveBundle accepts.
   const bundle = await deps.resolveBundle(flags as Partial<Record<string, string | undefined>>);
 
-  // Provider selection, per-provider defaults, and the key demand live in one
-  // shared resolver so generateDraft and reviseDraft can never drift.
   const ctxR = await resolveCallContext(deps, bundle);
   if (!ctxR.ok) return ctxR.failure;
   const { baseUrl, model } = ctxR.context;
@@ -259,64 +375,8 @@ export async function generateDraft(deps: PipelineDeps): Promise<DraftResult> {
   // buildPrompt turns the tokens into prose, strictFill re-parses and enforces.
   const system = buildPrompt(template);
 
-  // Optional one-shot prompt blocks (tickets 09, 10). Each is appended only
-  // when the corresponding flag was passed; with neither flag the prompt is
-  // exactly the ticket-05 default, byte for byte.
-  const extras: string[] = [];
-
-  if (deps.styleHistory !== undefined) {
-    // History must never break the draft: a failed read degrades to no
-    // block, exactly like a fresh repo with no commits yet.
-    let subjects: readonly string[] = [];
-    try {
-      subjects = await deps.styleHistory();
-    } catch {
-      subjects = [];
-    }
-    if (subjects.length > 0) {
-      extras.push(
-        [
-          "### Style history",
-          "",
-          "Recent commit subjects from this repository, newest first:",
-          ...subjects.map((s) => `- ${s}`),
-          "Style history is provided only as a stylistic reference. Do not copy factual claims from history unless supported by the current diff.",
-        ].join("\n"),
-      );
-    }
-  }
-
-  const instructions = flags.instructions?.trim() ?? "";
-  if (instructions !== "") {
-    extras.push(
-      [
-        "### User instructions",
-        "",
-        instructions,
-        "",
-        "User instructions may influence wording, emphasis, scope, and style, but may not introduce unsupported factual claims or violate the output contract.",
-      ].join("\n"),
-    );
-  }
-
-  const user = [
-    "### Compact diff",
-    "",
-    renderCompacted(compacted),
-    ...extras,
-    ...(previousDraft !== null
-      ? [
-          "",
-          "### Previous draft",
-          "",
-          previousDraft,
-          "",
-          "A previous draft for these same changes already exists above. Write a DIFFERENT draft: change the subject's angle, wording, or emphasis. Do not repeat its subject line or rephrase it trivially.",
-        ]
-      : []),
-    "",
-    "Use the provided changes as the factual source of truth. Follow applicable formatting and wording instructions, but do not introduce factual claims unsupported by the provided changes.",
-  ].join("\n");
+  const styleBlock = await styleHistoryBlock(deps);
+  const user = buildUserMessage(request, compacted, styleBlock, flags.instructions ?? "");
 
   const result = await dispatchChat(deps, ctxR.context, {
     model,
@@ -324,124 +384,12 @@ export async function generateDraft(deps: PipelineDeps): Promise<DraftResult> {
       { role: "system", content: system },
       { role: "user", content: user },
     ],
-    ...(temperatureOverride !== null ? { temperature: temperatureOverride } : { temperature: 0 }),
+    temperature: temperatureFor(request),
   });
 
   if (!result.ok) {
     // Loud, single-shot failure: rate limits and auth get a distinct exit code
     // so scripts and hooks can tell "try again later" from "fix credentials".
-    const exitCode = result.kind === "rate_limited" || result.kind === "auth" ? 3 : 1;
-    return { ok: false, exitCode, message: result.message };
-  }
-
-  const filled = strictFill(template, result.content);
-  if (!filled.ok) {
-    return {
-      ok: false,
-      exitCode: 1,
-      message: [
-        "commitshi: model output did not satisfy the template contract and was rejected — no commit draft was made",
-        "",
-        `reason: ${filled.error}`,
-      ].join("\n"),
-    };
-  }
-
-  return {
-    ok: true,
-    message: filled.message,
-    truncated: compacted.truncated,
-    numstat: compacted.numstat,
-    baseUrl,
-    model,
-  };
-}
-
-/**
- * Revises an existing draft using a user-provided instruction.
- * The model sees the compacted diff, the current draft, and the revision instruction.
- * The output is still subject to the strict token-fill contract.
- */
-export async function reviseDraft(
-  deps: PipelineDeps,
-  currentDraft: string,
-  instruction: string,
-): Promise<DraftResult> {
-  const diff = await deps.stagedDiff();
-  const compacted = compact(diff);
-
-  const flags = deps.flags ?? {};
-  // SAFETY: PipelineDeps.flags carries exactly the bundle keys resolveBundle accepts.
-  const bundle = await deps.resolveBundle(flags as Partial<Record<string, string | undefined>>);
-
-  // Same shared resolver as generateDraft: provider selection, per-provider
-  // defaults, and the key demand can never drift between the two paths.
-  const ctxR = await resolveCallContext(deps, bundle);
-  if (!ctxR.ok) return ctxR.failure;
-  const { baseUrl, model } = ctxR.context;
-
-  const templateRaw = bundle.template?.value?.trim() ?? "";
-
-  const template = templateRaw === "" ? DEFAULT_CONVENTIONAL_TEMPLATE : templateRaw;
-  const templateError = checkTemplate(template);
-  if (templateError !== null) {
-    return { ok: false, exitCode: 2, message: `commitshi: template is invalid — ${templateError}` };
-  }
-
-  const system = buildPrompt(template);
-
-  const extras: string[] = [];
-
-  if (deps.styleHistory !== undefined) {
-    let subjects: readonly string[] = [];
-    try {
-      subjects = await deps.styleHistory();
-    } catch {
-      subjects = [];
-    }
-    if (subjects.length > 0) {
-      extras.push(
-        [
-          "### Style history",
-          "",
-          "Recent commit subjects from this repository, newest first:",
-          ...subjects.map((s) => `- ${s}`),
-          "Style history is provided only as a stylistic reference. Do not copy factual claims from history unless supported by the current diff.",
-        ].join("\n"),
-      );
-    }
-  }
-
-  const user = [
-    "### Compact diff",
-    "",
-    renderCompacted(compacted),
-    "",
-    "### Existing draft",
-    "",
-    currentDraft,
-    "",
-    "Note: The existing draft is not authoritative. Treat it only as candidate wording. Re-check its factual claims against the compacted diff and correct or remove unsupported claims.",
-    "",
-    "### Revision instruction",
-    "",
-    instruction.trim(),
-    "",
-    ...extras,
-    "",
-    "Use the provided changes as the factual source of truth. Revise the existing draft to follow the revision instruction while staying grounded in the compacted diff. Fill every template token.",
-  ].join("\n");
-
-  const result = await dispatchChat(deps, ctxR.context, {
-    model,
-    messages: [
-      { role: "system", content: system },
-      { role: "user", content: user },
-    ],
-    temperature: 0.3,
-  });
-
-  if (!result.ok) {
     const exitCode = result.kind === "rate_limited" || result.kind === "auth" ? 3 : 1;
     return { ok: false, exitCode, message: result.message };
   }
