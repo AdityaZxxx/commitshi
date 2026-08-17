@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { PassThrough } from "node:stream";
-import { interactLoop, type AskKey, type DraftAttempt, type LoopDeps } from "./loop.ts";
+import { interactLoop, readLine, type AskKey, type DraftAttempt, type LoopDeps } from "./loop.ts";
 
 /** Strips ANSI SGR escapes so assertions match on visible text, not codes. */
 function stripAnsi(s: string): string {
@@ -298,5 +298,82 @@ describe("interactLoop", () => {
     // Prompt is muted, not accent — ensure accent color is not applied to the prompt
     expect(stdout.text()).not.toMatch(/\x1b\[38;2;38;153;74m\[Enter\]/);
     expect(stdout.text()).not.toMatch(/\x1b\[38;5;35m\[Enter\]/);
+  });
+
+  test("p reads an instruction and revise produces the new draft", async () => {
+    let received: { draft: string; instruction: string } | undefined;
+    const revise = async (draft: string, instruction: string): Promise<DraftAttempt> => {
+      received = { draft, instruction };
+      return { ok: true, draft: "feat(a): shorter", truncated: false, numstat: [] };
+    };
+    const { deps, stdout } = makeDeps(["p", "shorter", "\r", ""], { revise });
+    const result = await interactLoop(good, deps);
+    expect(result).toEqual({
+      ok: true,
+      action: "accepted",
+      draft: "feat(a): shorter",
+      regenerations: 0,
+    });
+    expect(received).toEqual({ draft: "feat(a): do the thing", instruction: "shorter" });
+    expect(stdout.visible()).toContain("Revision instruction: shorter");
+  });
+
+  test("p with escape cancels the revision — draft unchanged, no flicker re-render", async () => {
+    const revise = async (): Promise<DraftAttempt> => {
+      throw new Error("revise must not run on cancel");
+    };
+    const { deps, stdout } = makeDeps(["p", "par", "\x1b", ""], { revise });
+    const result = await interactLoop(good, deps);
+    expect(result).toEqual({
+      ok: true,
+      action: "accepted",
+      draft: "feat(a): do the thing",
+      regenerations: 0,
+    });
+    // The echoed partial line is erased, and the frame is NOT re-rendered
+    // after cancel (single DRAFT 1 header in the whole transcript).
+    const v = stdout.visible();
+    expect(v).toContain("Revision instruction: par");
+    expect(v.match(/DRAFT 1/g)).toHaveLength(1);
+  });
+
+  test("EOF while reading the revision instruction fails loud", async () => {
+    const revise = async (): Promise<DraftAttempt> => {
+      throw new Error("revise must not run on EOF");
+    };
+    const { deps } = makeDeps(["p", null], { revise });
+    const result = await interactLoop(good, deps);
+    expect(result).toEqual({
+      ok: false,
+      exitCode: 1,
+      message: expect.stringContaining("input closed"),
+    });
+  });
+});
+
+describe("readLine", () => {
+  test("re-assembles chunked input, echoes, and stops at Enter", async () => {
+    const written: string[] = [];
+    const ask = scriptedAsk(["sho", "r", "t", "\r"]);
+    const result = await readLine(ask, (s) => written.push(s));
+    expect(result).toEqual({ kind: "ok", line: "short" });
+    expect(written.join("")).toBe("short\n");
+  });
+
+  test("backspace deletes the last echoed character; nothing to delete is a no-op", async () => {
+    const written: string[] = [];
+    const ask = scriptedAsk(["\x7f", "ab", "\b", "\r"]);
+    const result = await readLine(ask, (s) => written.push(s));
+    expect(result).toEqual({ kind: "ok", line: "a" });
+    expect(written.join("")).toBe("ab\b \b\n");
+  });
+
+  test("Ctrl-C maps to interrupted, echoed without a trailing newline", async () => {
+    // Escape and EOF are covered by the loop-level integration tests; the
+    // interrupted mapping is only observable here (the loop self-raises on it).
+    const written: string[] = [];
+    const result = await readLine(scriptedAsk(["par", "\x03"]), (s) => written.push(s));
+    expect(result).toEqual({ kind: "interrupted" });
+    expect(written.join("")).toBe("par");
   });
 });

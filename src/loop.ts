@@ -16,9 +16,14 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { readFile, unlink, writeFile } from "node:fs/promises";
 import { spawn as nodeSpawn } from "node:child_process";
-import { presentDraft, resolveColors, shouldEmitColor, type ColorGate } from "./presentation.ts";
+import { presentDraft, resolveColors, shouldEmitColor } from "./presentation.ts";
 import { startLoader } from "./loader.ts";
-import { run, type EditorStdin, type EditorStdout } from "./inline-editor/index.ts";
+import {
+  run,
+  type EditorStdin,
+  type EditorStdout,
+  type InlineResult,
+} from "./inline-editor/index.ts";
 import type { NumstatEntry } from "./compaction.ts";
 
 /** One raw keypress chunk from the user: the bytes as typed, unnormalized; null on EOF. */
@@ -168,27 +173,42 @@ async function editDraft(
   }
 }
 
+/** One line of user input, assembled from raw keypress chunks. The byte
+ *  protocol (echo, backspace, escape, Ctrl-C, EOF) lives here once, so the
+ *  loop's branches stay decisions instead of byte handling. Escape cancels;
+ *  Ctrl-C interrupts; null (EOF) is its own kind so the loop can fail loud. */
+export type ReadLineResult =
+  | Readonly<{ kind: "ok"; line: string }>
+  | Readonly<{ kind: "cancelled" }>
+  | Readonly<{ kind: "interrupted" }>
+  | Readonly<{ kind: "eof" }>;
+
 /**
- * Inline edit of the draft using the zero-dep state machine editor.
+ * Reads one line through the loop's existing `ask` seam, echoing as it goes.
+ * Writes nothing else: erasing the line afterwards is the caller's frame
+ * layout, not the reader's.
  */
-async function inlineEdit(
-  draft: string,
-  _ask: AskKey,
-  _pushback: (s: string) => void,
-  stdin: EditorStdin,
-  stdout: EditorStdout,
-  _colors: ColorGate,
-  _columns: number | undefined,
-): Promise<
-  | { ok: true; text: string }
-  | { ok: false; kind: "cancelled" }
-  | { ok: false; kind: "empty-subject"; message: string }
-> {
-  const result = await run(draft, stdin, stdout);
-  if (!result.ok) {
-    return result;
+export async function readLine(ask: AskKey, write: (s: string) => void): Promise<ReadLineResult> {
+  let line = "";
+  for (;;) {
+    const raw = await ask();
+    if (raw === null) return { kind: "eof" };
+    if (raw === "\x03") return { kind: "interrupted" };
+    if (raw === "\x1b") return { kind: "cancelled" };
+    if (raw === "\r" || raw === "\n") {
+      write("\n");
+      return { kind: "ok", line };
+    }
+    if (raw === "\x7f" || raw === "\b") {
+      if (line.length > 0) {
+        line = line.slice(0, -1);
+        write("\b \b");
+      }
+      continue;
+    }
+    line += raw;
+    write(raw);
   }
-  return { ok: true, text: result.text };
 }
 
 /**
@@ -226,22 +246,7 @@ export async function interactLoop(first: DraftAttempt, deps: LoopDeps): Promise
 
   const injectedAsk = deps.ask !== undefined;
   const asker = injectedAsk ? { ask: deps.ask, close: () => {} } : makeKeyAsker(deps.stdin);
-  // A pushback buffer shared with inlineEdit: the editor can return a
-  // look-ahead input (read during escape reassembly) back to the loop.
-  let pushedBack: string | null = null;
-  const ask = injectedAsk
-    ? async (): Promise<string | null> => {
-        if (pushedBack !== null) {
-          const v = pushedBack;
-          pushedBack = null;
-          return v;
-        }
-        return asker.ask();
-      }
-    : asker.ask;
-  const pushback = (s: string) => {
-    pushedBack = s;
-  };
+  const ask = asker.ask;
   const close = () => {
     if (!injectedAsk) asker.close();
   };
@@ -317,16 +322,8 @@ export async function interactLoop(first: DraftAttempt, deps: LoopDeps): Promise
       continue;
     }
     if (answer === "i") {
-      const editResult = await inlineEdit(
-        draft,
-        ask,
-        pushback,
-        deps.stdin,
-        deps.stdout,
-        colors,
-        deps.stdout.isTTY ? deps.stdout.columns : undefined,
-      );
-      // readMultiline pauses raw mode and stdin; restore for the loop.
+      const editResult: InlineResult = await run(draft, deps.stdin, deps.stdout);
+      // run leaves raw mode off; restore it for the production key source.
       if (!injectedAsk) {
         deps.stdin.setRawMode?.(true);
         deps.stdin.resume();
@@ -372,55 +369,27 @@ export async function interactLoop(first: DraftAttempt, deps: LoopDeps): Promise
         continue;
       }
       deps.stdout.write("\nRevision instruction: ");
-      let instruction = "";
-      let cancelled = false;
-      // Read a one-liner in raw mode, echoing as we go
-      while (true) {
-        const raw = await ask();
-        if (raw === null) {
-          close();
-          return {
-            ok: false,
-            exitCode: 1,
-            message: "commitshi: input closed — nothing accepted, no commit",
-          };
-        }
-        if (raw === "\x03") {
-          close();
-          process.kill(process.pid, "SIGINT");
-          return {
-            ok: false,
-            exitCode: 130,
-            message: "commitshi: interrupted — nothing accepted, no commit",
-          };
-        }
-        if (raw === "\x1b") {
-          // Escape cancels revision, erase the revision line and return to prompt line
-          deps.stdout.write("\r\x1b[K\x1b[1A");
-          cancelled = true;
-          break;
-        }
-        if (raw === "\r" || raw === "\n") {
-          deps.stdout.write("\n");
-          break;
-        }
-        if (raw === "\x7f" || raw === "\b") {
-          if (instruction.length > 0) {
-            instruction = instruction.slice(0, -1);
-            deps.stdout.write("\b \b");
-          }
-          continue;
-        }
-        instruction += raw;
-        deps.stdout.write(raw);
+      const line = await readLine(ask, (s) => deps.stdout.write(s));
+      if (line.kind === "eof") {
+        close();
+        return {
+          ok: false,
+          exitCode: 1,
+          message: "commitshi: input closed — nothing accepted, no commit",
+        };
       }
-      if (cancelled) {
-        // No draft change, avoid full re-render to prevent flicker
-        needsRender = false;
-        continue;
+      if (line.kind === "interrupted") {
+        close();
+        process.kill(process.pid, "SIGINT");
+        return {
+          ok: false,
+          exitCode: 130,
+          message: "commitshi: interrupted — nothing accepted, no commit",
+        };
       }
-      if (instruction.trim() === "") {
-        // Empty instruction: erase the revision line and return to prompt line
+      if (line.kind === "cancelled" || line.line.trim() === "") {
+        // Escape or blank: erase the revision line and return to the prompt —
+        // no draft change, no re-render (avoids flicker).
         deps.stdout.write("\r\x1b[K\x1b[1A");
         needsRender = false;
         continue;
@@ -430,7 +399,7 @@ export async function interactLoop(first: DraftAttempt, deps: LoopDeps): Promise
         deps.startLoader ?? ((label, write, isTTY) => startLoader(label, write, isTTY))
       )(`revising draft…`, (s) => deps.stdout.write(s), stdoutIsTTY);
       try {
-        attempt = await deps.revise(draft, instruction);
+        attempt = await deps.revise(draft, line.line);
       } finally {
         loader.stop();
       }
