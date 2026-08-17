@@ -31,58 +31,6 @@ describe("gitConfigGet", () => {
   });
 });
 
-describe("resolveKey", () => {
-  test("flag beats env, config file, and git config", async () => {
-    await withTempDir(async (dir) => {
-      const file = join(dir, "config");
-      await writeFile(file, "provider=openai\nmodel=file-model\n");
-      const run = config.makeResolveKey({
-        env: { COMMITSHI_MODEL: "env-model" },
-        configFilePath: file,
-        gitConfigGet: async () => ({ value: "git-model", source: "repo git-config" }),
-      });
-      expect(await run("model", { flags: { model: "flag-model" } })).toEqual({
-        value: "flag-model",
-        source: "flag",
-      });
-      expect(await run("model", {})).toEqual({ value: "env-model", source: "env" });
-    });
-  });
-
-  test("config file beats repo git-config, which beats global git-config", async () => {
-    await withTempDir(async (dir) => {
-      const file = join(dir, "config");
-      await writeFile(file, "provider=anthropic\n");
-      const run = config.makeResolveKey({
-        env: {},
-        configFilePath: file,
-        gitConfigGet: async () => ({ value: "git-anthropic", source: "repo git-config" }),
-      });
-      expect(await run("provider", {})).toEqual({ value: "anthropic", source: "config file" });
-    });
-  });
-
-  test("missing key resolves to null", async () => {
-    await withTempDir(async (dir) => {
-      const run = config.makeResolveKey({
-        env: {},
-        configFilePath: join(dir, "absent"),
-        gitConfigGet: async () => null,
-      });
-      expect(await run("model", {})).toBeNull();
-    });
-  });
-
-  test("missing config file is a soft no, not a crash", async () => {
-    const run = config.makeResolveKey({
-      env: {},
-      configFilePath: "/definitely/not/here/commitshi/config",
-      gitConfigGet: async () => null,
-    });
-    expect(await run("provider", {})).toBeNull();
-  });
-});
-
 describe("resolveApiKey", () => {
   test("OPENAI_API_KEY wins over the config file for the openai provider", async () => {
     await withTempDir(async (dir) => {

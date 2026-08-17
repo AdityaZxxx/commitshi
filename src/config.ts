@@ -110,36 +110,6 @@ export async function readConfigFile(path: string): Promise<Map<string, string>>
   return map;
 }
 
-/** Resolves a named config key through the full precedence chain. */
-export const makeResolveKey =
-  (deps: Deps = {}) =>
-  async (
-    key: string,
-    opts: { flags?: Partial<Record<string, string | undefined>> } = {},
-  ): Promise<Resolved | null> => {
-    const env = deps.env ?? process.env;
-    const gitConfigGet = deps.gitConfigGet ?? liveGitConfigGet;
-
-    const fromFlag = opts.flags?.[key];
-    if (fromFlag !== undefined && fromFlag !== "") {
-      return { value: fromFlag, source: "flag" };
-    }
-
-    const envName = `COMMITSHI_${key.toUpperCase().replace(/-/g, "_")}`;
-    const fromEnv = env[envName];
-    if (fromEnv !== undefined && fromEnv !== "") {
-      return { value: fromEnv, source: "env" };
-    }
-
-    const file = await readConfigFile(deps.configFilePath ?? defaultConfigFilePath(env));
-    const fromFile = file.get(key.toLowerCase());
-    if (fromFile !== undefined && fromFile !== "") {
-      return { value: fromFile, source: "config file" };
-    }
-
-    return gitConfigGet(`commitshi.${key.toLowerCase()}`);
-  };
-
 /** The config keys a draft resolves through the bundle (not the API key —
  *  that stays behind its own seam and never touches git config). */
 export const BUNDLE_KEYS = ["provider", "baseUrl", "model", "template"] as const;
@@ -155,8 +125,7 @@ export type ConfigBundle = Readonly<Record<BundleKey, Resolved>>;
  * Resolves the draft-facing config in ONE read of the config file: for each
  * bundle key, flag > env > config file > repo git-config > global git-config,
  * then this module's defaults — the bundle comes back total, so no caller
- * ever substitutes. One disk read total where `makeResolveKey`(per key)
- * would do one per key. The API key is deliberately absent — it lives behind
+ * ever substitutes. The API key is deliberately absent — it lives behind
  * `makeResolveApiKey`, which never consults git config (keys must not leak
  * into .git/config).
  */
