@@ -16,13 +16,14 @@
 import { dirname } from "node:path";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import {
+  DEFAULT_BASE_URL,
+  DEFAULT_MODEL,
   defaultConfigFilePath,
   formatConfigFile,
   isLocalBaseUrl,
   readConfigFile,
   updateConfigText,
 } from "./config.ts";
-import { DEFAULT_BASE_URL, DEFAULT_MODEL } from "./pipeline.ts";
 
 /** One line of wizard input; "" for Enter, null on EOF. */
 export type NextLine = () => Promise<string | null>;

@@ -1,12 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import {
-  DEFAULT_ANTHROPIC_BASE_URL,
-  DEFAULT_ANTHROPIC_MODEL,
   draft,
   REGENERATE_TEMPERATURE,
   REVISE_TEMPERATURE,
   type PipelineDeps,
 } from "./pipeline.ts";
+import {
+  DEFAULT_ANTHROPIC_BASE_URL,
+  DEFAULT_ANTHROPIC_MODEL,
+  DEFAULT_BASE_URL,
+  DEFAULT_MODEL,
+} from "./config.ts";
 
 // Ticket 09 + 10: one-shot --instructions / --template / --style flags.
 // The chat seam captures the exact prompt sent to the model so every test
@@ -23,22 +27,34 @@ const DIFF = [
 ].join("\n");
 
 /** A bundle resolver that honors flags (top of the precedence chain) then
- *  "committed" config values — the test twin of config.ts's resolveBundle. */
+ *  "committed" config values, then fills the per-provider defaults — the
+ *  test twin of config.ts's TOTAL resolveBundle. */
 const makeResolveBundle =
   (committed: Partial<Record<string, string>> = {}): PipelineDeps["resolveBundle"] =>
   async (flags = {}) => {
     type R = { value: string; source: import("./config.ts").Source };
-    const out: Partial<Record<"provider" | "baseUrl" | "model" | "template", R>> = {};
-    for (const key of ["provider", "baseUrl", "model", "template"] as const) {
+    const found = (key: "provider" | "baseUrl" | "model" | "template"): R | null => {
       const fromFlag = flags[key];
-      if (fromFlag !== undefined && fromFlag !== "") {
-        out[key] = { value: fromFlag, source: "flag" };
-        continue;
-      }
+      if (fromFlag !== undefined && fromFlag !== "") return { value: fromFlag, source: "flag" };
       const value = committed[key];
-      if (value !== undefined && value !== "") out[key] = { value, source: "config file" };
-    }
-    return out;
+      if (value !== undefined && value !== "") return { value, source: "config file" };
+      return null;
+    };
+    const provider: R = found("provider") ?? { value: "openai", source: "default" };
+    const isAnthropic = provider.value.trim().toLowerCase() === "anthropic";
+    const baseUrl: R = found("baseUrl") ?? {
+      value: isAnthropic ? DEFAULT_ANTHROPIC_BASE_URL : DEFAULT_BASE_URL,
+      source: "default",
+    };
+    const model: R = found("model") ?? {
+      value: isAnthropic ? DEFAULT_ANTHROPIC_MODEL : DEFAULT_MODEL,
+      source: "default",
+    };
+    const template: R = found("template") ?? {
+      value: "{type}{scope}: {summary}\n\n{body}",
+      source: "default",
+    };
+    return { provider, baseUrl, model, template };
   };
 
 const LOCAL_BASE = { baseUrl: "http://localhost:11434/v1" };

@@ -14,17 +14,7 @@ import { chatCompletions, type ChatDeps, type CompletionResult } from "./provide
 import { anthropicMessages } from "./provider/anthropic.ts";
 import type { Provider } from "./config.ts";
 import { isLocalBaseUrl, missingKeyMessage, type ConfigBundle } from "./config.ts";
-import {
-  buildPrompt,
-  checkTemplate,
-  DEFAULT_CONVENTIONAL_TEMPLATE,
-  strictFill,
-} from "./template.ts";
-
-// Re-exported so the setup wizard and pipeline share one source of truth:
-// the URL the wizard offers as default is exactly the one the pipeline
-// falls back to, and the local-endpoint check never drifts apart.
-export { isLocalBaseUrl };
+import { buildPrompt, checkTemplate, strictFill } from "./template.ts";
 
 export type PipelineDeps = Readonly<{
   stagedDiff: () => Promise<string>;
@@ -37,15 +27,16 @@ export type PipelineDeps = Readonly<{
   styleHistory?: () => Promise<readonly string[]>;
   /** The one config seam: resolves the draft-facing bundle
    * (provider/baseUrl/model/template over the injected flags) in a single
-   * pass. Production wires config.ts's `resolveBundle`; tests stub it. */
+   * pass and returns it TOTAL — defaults filled, tagged `source: "default"`.
+   * Production wires config.ts's `resolveBundle`; tests stub it. */
   resolveBundle: (flags?: Partial<Record<string, string | undefined>>) => Promise<ConfigBundle>;
   /** Resolves the API key for a named provider. */
   resolveApiKey: (
     provider: Provider,
   ) => Promise<Readonly<{ value: string; source: string }> | null>;
-  /** Environment seam for the pipeline's own legacy-env fallbacks
-   * (OPENAI_BASE_URL / OPENAI_API_KEY); tests inject a hermetic env so a
-   * developer's exported vars can't leak into the key-demand check. */
+  /** Environment seam for the key-demand check (OPENAI_API_KEY /
+   * ANTHROPIC_API_KEY); tests inject a hermetic env so a developer's
+   * exported vars can't leak into the check. */
   env?: NodeJS.ProcessEnv;
   chat?: (deps: ChatDeps, req: Parameters<typeof chatCompletions>[1]) => Promise<CompletionResult>;
   /** Anthropic transport seam (tests); production wires provider/anthropic.ts's `anthropicMessages`. */
@@ -96,16 +87,6 @@ export type DraftResult =
       kind?: "missing-key";
     }>;
 
-export const DEFAULT_BASE_URL = "https://api.openai.com/v1";
-// Cheap, fast, right-sized for a ~600-token commit subject. Deliberately
-// NOT the `gpt-5.6` alias, which routes to the flagship Sol tier ($5/$30).
-export const DEFAULT_MODEL = "gpt-5.6-luna";
-
-// The Anthropic seam's own defaults: the Messages API root and the cheapest
-// current Claude — same "cheap, fast, right-sized" rationale as DEFAULT_MODEL.
-export const DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com";
-export const DEFAULT_ANTHROPIC_MODEL = "claude-haiku-4-5";
-
 /** The providers the pipeline can route a draft through. */
 export const SUPPORTED_PROVIDERS: readonly Provider[] = ["openai", "anthropic"];
 
@@ -151,11 +132,11 @@ type ContextOutcome =
   | Readonly<{ ok: false; failure: DraftResult }>;
 
 /**
- * Resolves the call context: provider selection (unknown names refuse loud,
- * never a silent fallthrough to the wrong wire format), per-provider
- * baseUrl/model defaults, and the key demand. Every provider-specific
- * default lives HERE, so neither transport's assumptions leak into the
- * other's flow.
+ * Resolves the call context from a TOTAL bundle: provider selection
+ * (unknown names refuse loud, never a silent fallthrough to the wrong wire
+ * format) and the key demand. The per-provider baseUrl/model defaults are
+ * already filled by config.ts's `resolveBundle` — this function substitutes
+ * nothing; it reads values and routes.
  *
  * The API key may legitimately be absent for a local endpoint; only a
  * non-local baseUrl demands one. Keys keep their own seam — they never
@@ -167,33 +148,24 @@ async function resolveCallContext(
 ): Promise<ContextOutcome> {
   const pipeEnv = deps.env ?? process.env;
 
-  const providerRaw = bundle.provider?.value ?? "";
-  let provider: Provider;
-  if (providerRaw.trim() === "") {
-    provider = "openai"; // absent means the OpenAI-compatible default
-  } else {
-    const normalized = normalizeProvider(providerRaw);
-    if (normalized === null) {
-      return {
+  // Config fills provider (never blank); an unknown name refuses loud —
+  // never a silent fallthrough to the wrong wire format.
+  const provider = normalizeProvider(bundle.provider.value);
+  if (provider === null) {
+    return {
+      ok: false,
+      failure: {
         ok: false,
-        failure: {
-          ok: false,
-          exitCode: 2,
-          message: `commitshi: provider "${providerRaw}" is not supported — supported providers: openai (OpenAI-compatible: OpenAI, Groq, DeepSeek, Ollama at any baseUrl), anthropic.`,
-        },
-      };
-    }
-    provider = normalized;
+        exitCode: 2,
+        message: `commitshi: provider "${bundle.provider.value}" is not supported — supported providers: openai (OpenAI-compatible: OpenAI, Groq, DeepSeek, Ollama at any baseUrl), anthropic.`,
+      },
+    };
   }
 
-  const baseUrl =
-    provider === "anthropic"
-      ? (bundle.baseUrl?.value ?? DEFAULT_ANTHROPIC_BASE_URL)
-      : (bundle.baseUrl?.value ?? pipeEnv.OPENAI_BASE_URL ?? DEFAULT_BASE_URL);
-  const model =
-    provider === "anthropic"
-      ? (bundle.model?.value ?? DEFAULT_ANTHROPIC_MODEL)
-      : (bundle.model?.value ?? DEFAULT_MODEL);
+  // Total bundle: config already applied the per-provider default. The
+  // pipeline reads, never substitutes.
+  const baseUrl = bundle.baseUrl.value;
+  const model = bundle.model.value;
 
   // Key demand is resolved here once, after the bundle — main does not
   // pre-check, so a missing key surfaces as "no draft" instead of "no diff".
@@ -355,7 +327,7 @@ export async function draft(deps: PipelineDeps, request: DraftRequest): Promise<
 
   const flags = deps.flags ?? {};
   // One bundle read: provider/baseUrl/model/template in a single config-file
-  // pass. resolveKey (per key) stays the granular seam for other callers.
+  // pass, returned total — defaults are config's job, not the pipeline's.
   // SAFETY: PipelineDeps.flags carries exactly the bundle keys resolveBundle accepts.
   const bundle = await deps.resolveBundle(flags as Partial<Record<string, string | undefined>>);
 
@@ -363,8 +335,10 @@ export async function draft(deps: PipelineDeps, request: DraftRequest): Promise<
   if (!ctxR.ok) return ctxR.failure;
   const { baseUrl, model } = ctxR.context;
 
-  const templateRaw = bundle.template?.value?.trim() ?? "";
-  const template = templateRaw === "" ? DEFAULT_CONVENTIONAL_TEMPLATE : templateRaw;
+  // Total bundle: config filled the default template when none was set (and
+  // treats a whitespace-only template as absent). Trim any padding a
+  // hand-configured value may carry; checkTemplate rejects malformed shapes.
+  const template = bundle.template.value.trim();
   // Fail fast on a malformed template before a single token is spent — the
   // model call is the expensive failure to make loud.
   const templateError = checkTemplate(template);

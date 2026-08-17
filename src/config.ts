@@ -13,11 +13,29 @@ import { readFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
+import { DEFAULT_CONVENTIONAL_TEMPLATE } from "./template.ts";
+
 const execFileAsync = promisify(execFile);
 
-export type Source = "flag" | "env" | "config file" | "repo git-config" | "global git-config";
+export type Source =
+  | "flag"
+  | "env"
+  | "config file"
+  | "repo git-config"
+  | "global git-config"
+  | "default";
 export type Resolved = Readonly<{ value: string; source: Source }>;
 export type Provider = "openai" | "anthropic";
+
+export const DEFAULT_BASE_URL = "https://api.openai.com/v1";
+// Cheap, fast, right-sized for a ~600-token commit subject. Deliberately
+// NOT the `gpt-5.6` alias, which routes to the flagship Sol tier ($5/$30).
+export const DEFAULT_MODEL = "gpt-5.6-luna";
+
+// The Anthropic seam's own defaults: the Messages API root and the cheapest
+// current Claude — same "cheap, fast, right-sized" rationale as DEFAULT_MODEL.
+export const DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com";
+export const DEFAULT_ANTHROPIC_MODEL = "claude-haiku-4-5";
 
 export function defaultConfigFilePath(env: NodeJS.ProcessEnv = process.env): string {
   return env.XDG_CONFIG_HOME
@@ -127,16 +145,20 @@ export const makeResolveKey =
 export const BUNDLE_KEYS = ["provider", "baseUrl", "model", "template"] as const;
 export type BundleKey = (typeof BUNDLE_KEYS)[number];
 
-/** The resolved draft bundle: one value per draft-facing key, if found.
- *  Absent means "caller substitutes its default" — resolution never invents. */
-export type ConfigBundle = Readonly<Partial<Record<BundleKey, Resolved>>>;
+/** The resolved draft bundle: TOTAL — one value per draft-facing key. Keys
+ *  nothing in the precedence chain supplies fall back to this module's
+ *  defaults, tagged `source: "default"`. Callers receive values, never
+ *  absences (see docs/adr/0001-config-owns-defaults.md). */
+export type ConfigBundle = Readonly<Record<BundleKey, Resolved>>;
 
 /**
  * Resolves the draft-facing config in ONE read of the config file: for each
- * bundle key, flag > env > config file > repo git-config > global git-config.
- * One disk read total where `makeResolveKey`(per key) would do one per key.
- * The API key is deliberately absent — it lives behind `makeResolveApiKey`,
- * which never consults git config (keys must not leak into .git/config).
+ * bundle key, flag > env > config file > repo git-config > global git-config,
+ * then this module's defaults — the bundle comes back total, so no caller
+ * ever substitutes. One disk read total where `makeResolveKey`(per key)
+ * would do one per key. The API key is deliberately absent — it lives behind
+ * `makeResolveApiKey`, which never consults git config (keys must not leak
+ * into .git/config).
  */
 export async function resolveBundle(
   deps: Deps = {},
@@ -147,28 +169,52 @@ export async function resolveBundle(
   // One read, shared across every key in the bundle.
   const file = await readConfigFile(deps.configFilePath ?? defaultConfigFilePath(env));
 
-  const out: Partial<Record<BundleKey, Resolved>> = {};
-  for (const key of BUNDLE_KEYS) {
+  const found = async (key: BundleKey): Promise<Resolved | null> => {
     const fromFlag = flags[key];
     if (fromFlag !== undefined && fromFlag !== "") {
-      out[key] = { value: fromFlag, source: "flag" };
-      continue;
+      return { value: fromFlag, source: "flag" };
     }
     const envName = `COMMITSHI_${key.toUpperCase().replace(/-/g, "_")}`;
     const fromEnv = env[envName];
     if (fromEnv !== undefined && fromEnv !== "") {
-      out[key] = { value: fromEnv, source: "env" };
-      continue;
+      return { value: fromEnv, source: "env" };
     }
     const fromFile = file.get(key.toLowerCase());
     if (fromFile !== undefined && fromFile !== "") {
-      out[key] = { value: fromFile, source: "config file" };
-      continue;
+      return { value: fromFile, source: "config file" };
     }
+    // An empty git-config value counts as absent, same as the other levels
+    // — a present-but-empty key never routes anywhere on its own.
     const fromGit = await gitConfigGet(`commitshi.${key.toLowerCase()}`);
-    if (fromGit !== null) out[key] = fromGit;
-  }
-  return out;
+    return fromGit !== null && fromGit.value !== "" ? fromGit : null;
+  };
+
+  // Provider resolves first: the baseUrl/model defaults depend on it.
+  const provider: Resolved = (await found("provider")) ?? {
+    value: "openai", // absent means the OpenAI-compatible default
+    source: "default",
+  };
+  const isAnthropic = provider.value.trim().toLowerCase() === "anthropic";
+
+  const baseUrl: Resolved = (await found("baseUrl")) ?? {
+    value: isAnthropic ? DEFAULT_ANTHROPIC_BASE_URL : DEFAULT_BASE_URL,
+    source: "default",
+  };
+
+  const model: Resolved = (await found("model")) ?? {
+    value: isAnthropic ? DEFAULT_ANTHROPIC_MODEL : DEFAULT_MODEL,
+    source: "default",
+  };
+
+  // A whitespace-only template counts as absent: the default is the one
+  // shape the fill contract is authored against.
+  const foundTemplate = await found("template");
+  const template: Resolved =
+    foundTemplate !== null && foundTemplate.value.trim() !== ""
+      ? foundTemplate
+      : { value: DEFAULT_CONVENTIONAL_TEMPLATE, source: "default" };
+
+  return { provider, baseUrl, model, template };
 }
 
 /**

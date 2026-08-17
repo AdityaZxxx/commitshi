@@ -150,16 +150,97 @@ describe("resolveBundle", () => {
     });
   });
 
-  test("absent keys are simply not present — the caller substitutes defaults", async () => {
+  test("nothing configured: the bundle comes back total, tagged source default", async () => {
     await withTempDir(async (dir) => {
       const bundle = await config.resolveBundle(
         { env: {}, configFilePath: join(dir, "absent"), gitConfigGet: async () => null },
         {},
       );
-      expect(bundle.model).toBeUndefined();
-      expect(bundle.baseUrl).toBeUndefined();
-      expect(bundle.provider).toBeUndefined();
-      expect(bundle.template).toBeUndefined();
+      expect(bundle.provider).toEqual({ value: "openai", source: "default" });
+      expect(bundle.baseUrl).toEqual({ value: config.DEFAULT_BASE_URL, source: "default" });
+      expect(bundle.model).toEqual({ value: config.DEFAULT_MODEL, source: "default" });
+      expect(bundle.template).toEqual({
+        value: "{type}{scope}: {summary}\n\n{body}",
+        source: "default",
+      });
+    });
+  });
+
+  test("provider=anthropic switches the baseUrl/model defaults to the Anthropic ones", async () => {
+    await withTempDir(async (dir) => {
+      const bundle = await config.resolveBundle(
+        {
+          env: {},
+          configFilePath: join(dir, "absent"),
+          gitConfigGet: async (key) =>
+            key === "commitshi.provider" ? { value: "anthropic", source: "repo git-config" } : null,
+        },
+        {},
+      );
+      expect(bundle.provider).toEqual({ value: "anthropic", source: "repo git-config" });
+      expect(bundle.baseUrl).toEqual({
+        value: config.DEFAULT_ANTHROPIC_BASE_URL,
+        source: "default",
+      });
+      expect(bundle.model).toEqual({ value: config.DEFAULT_ANTHROPIC_MODEL, source: "default" });
+    });
+  });
+
+  test("a configured baseUrl/model/template beat the defaults even under anthropic", async () => {
+    await withTempDir(async (dir) => {
+      const file = join(dir, "config");
+      await writeFile(
+        file,
+        "provider=anthropic\nbaseurl=https://proxy.example/v1\nmodel=claude-x\n",
+      );
+      const bundle = await config.resolveBundle(
+        { env: {}, configFilePath: file, gitConfigGet: async () => null },
+        {},
+      );
+      expect(bundle.baseUrl).toEqual({ value: "https://proxy.example/v1", source: "config file" });
+      expect(bundle.model).toEqual({ value: "claude-x", source: "config file" });
+      expect(bundle.template.source).toBe("default");
+    });
+  });
+
+  test("OPENAI_BASE_URL is not consulted — the documented env path is COMMITSHI_BASEURL", async () => {
+    await withTempDir(async (dir) => {
+      const bundle = await config.resolveBundle(
+        {
+          env: { OPENAI_BASE_URL: "http://proxy.local/v1" },
+          configFilePath: join(dir, "absent"),
+          gitConfigGet: async () => null,
+        },
+        {},
+      );
+      expect(bundle.baseUrl).toEqual({ value: config.DEFAULT_BASE_URL, source: "default" });
+    });
+  });
+
+  test("an empty git-config value counts as absent and falls back to the default", async () => {
+    await withTempDir(async (dir) => {
+      const bundle = await config.resolveBundle(
+        {
+          env: {},
+          configFilePath: join(dir, "absent"),
+          gitConfigGet: async (key) =>
+            key === "commitshi.model" ? { value: "", source: "repo git-config" } : null,
+        },
+        {},
+      );
+      expect(bundle.model).toEqual({ value: config.DEFAULT_MODEL, source: "default" });
+    });
+  });
+
+  test("a whitespace-only template counts as absent and falls back to the default", async () => {
+    await withTempDir(async (dir) => {
+      const file = join(dir, "config");
+      await writeFile(file, "template=   \n");
+      const bundle = await config.resolveBundle(
+        { env: {}, configFilePath: file, gitConfigGet: async () => null },
+        {},
+      );
+      expect(bundle.template.source).toBe("default");
     });
   });
 

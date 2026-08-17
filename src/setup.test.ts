@@ -15,7 +15,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { runSetup } from "./setup.ts";
 import { main } from "./main.ts";
-import { DEFAULT_MODEL } from "./pipeline.ts";
+import { DEFAULT_MODEL } from "./config.ts";
 import { readConfigFile } from "./config.ts";
 
 const execFileAsync = promisify(execFile);
